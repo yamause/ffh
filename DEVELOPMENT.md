@@ -76,6 +76,8 @@ prod       ← tags[2]
 | `--preview-host <name>` | プレビューペイン出力 | fzf preview |
 | `--tab-list <statefile> <delta>` | タブ切り替え＋ホスト一覧出力 | fzf reload |
 | `--tab-header <statefile>` | タブヘッダー出力 | fzf transform-header |
+| `--ssh-config-view <hostname>` | `ssh -G` 全オプションをネスト fzf で表示 | fzf execute (Ctrl-G) |
+| `--preview-option <option-line>` | SSH オプションの日本語説明を出力 | ネスト fzf preview |
 
 ## SSH config パーサー
 

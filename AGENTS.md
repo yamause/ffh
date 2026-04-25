@@ -28,7 +28,9 @@ ffh --hosts [ssh-args]  # interactive selection from Windows hosts file
 ## Internal flags (used by fzf preview, not for direct use)
 
 ```
-ffh --preview-host <name>   # print host details to stdout; called by fzf itself
+ffh --preview-host <name>         # print host details to stdout; called by fzf preview
+ffh --ssh-config-view <hostname>  # open nested fzf with ssh -G output; called by Ctrl-G execute binding
+ffh --preview-option <option-line> # print Japanese description of an SSH option; called by nested fzf preview
 ```
 
 ## File Structure
