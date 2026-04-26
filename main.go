@@ -55,6 +55,17 @@ func main() {
 		return
 	}
 
+	// Internal command: --tab-source-toggle <statefile> [<sshconfig>]
+	// Toggles tab source between "tag" and "source", resets to index 0, outputs reloaded list.
+	if len(args) >= 2 && args[0] == "--tab-source-toggle" {
+		var configArg string
+		if len(args) >= 3 {
+			configArg = args[2]
+		}
+		tabSourceToggle(args[1], resolveSSHConfigPath(configArg))
+		return
+	}
+
 	// Internal command used by ctrl-g execute binding: --ssh-config-view <hostname> [<sshconfig>]
 	// Launches a nested fzf showing ssh -G output with per-option descriptions.
 	if len(args) >= 2 && args[0] == "--ssh-config-view" {
@@ -149,16 +160,18 @@ func main() {
 		return
 	}
 
-	// Extract -F value before passing args to sshMode so the config path is known.
+	// Extract -F and --tab-source before passing args to sshMode.
 	sshConfigPath := resolveSSHConfigPath(extractSSHConfigFlagValue(args))
-	sshMode(args, sshConfigPath)
+	tabSource := resolveTabSource(extractTabSourceFlagValue(args))
+	sshMode(args, sshConfigPath, tabSource)
 }
 
 // tabState holds the ordered tag list and current index, persisted in a temp file.
-// Format: "<idx>\n<tag0>\n<tag1>\n..." where tag0 is always "All".
+// Format: "<idx>\n<source>\n<tag0>\n<tag1>\n..." where tag0 is always "All".
 type tabState struct {
-	tags []string // tags[0] == "All"
-	idx  int
+	tags   []string // tags[0] == "All"
+	idx    int
+	source string // "tag" or "source"
 }
 
 func loadTabState(path string) tabState {
@@ -167,15 +180,19 @@ func loadTabState(path string) tabState {
 		return tabState{}
 	}
 	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
-	if len(lines) < 2 {
+	if len(lines) < 3 {
 		return tabState{}
 	}
 	idx, _ := strconv.Atoi(lines[0])
-	return tabState{tags: lines[1:], idx: idx}
+	src := lines[1]
+	if src != "source" {
+		src = "tag"
+	}
+	return tabState{tags: lines[2:], idx: idx, source: src}
 }
 
 func (s tabState) save(path string) {
-	lines := []string{strconv.Itoa(s.idx)}
+	lines := []string{strconv.Itoa(s.idx), s.source}
 	lines = append(lines, s.tags...)
 	os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0600)
 }
@@ -187,36 +204,66 @@ func (s tabState) currentTag() string {
 	return s.tags[s.idx]
 }
 
-func buildTabState(hosts []Host) tabState {
+func buildTabState(hosts []Host, source string) tabState {
 	seen := make(map[string]bool)
-	var tags []string
+	var items []string
 	for _, h := range hosts {
-		if h.Tag != "" && !seen[h.Tag] {
-			seen[h.Tag] = true
-			tags = append(tags, h.Tag)
+		var key string
+		if source == "source" {
+			key = h.SourceFile
+		} else {
+			key = h.Tag
+		}
+		if key != "" && !seen[key] {
+			seen[key] = true
+			items = append(items, key)
 		}
 	}
-	sort.Strings(tags)
-	return tabState{tags: append([]string{msgs.tabAll}, tags...), idx: 0}
+	sort.Strings(items)
+	return tabState{tags: append([]string{msgs.tabAll}, items...), idx: 0, source: source}
+}
+
+// tabDisplayName returns a short label for a tab value.
+// In source mode, absolute paths are shortened by replacing the home dir with ~.
+func tabDisplayName(value string, source string) string {
+	if source == "source" && value != msgs.tabAll {
+		home, _ := os.UserHomeDir()
+		if home != "" && strings.HasPrefix(value, home) {
+			return "~" + value[len(home):]
+		}
+		return filepath.Base(value)
+	}
+	return value
 }
 
 func renderHeader(s tabState) string {
 	var parts []string
 	for i, t := range s.tags {
+		label := tabDisplayName(t, s.source)
 		if i == s.idx {
-			parts = append(parts, "\033[1;7m "+t+" \033[0m") // bold + reverse = selected
+			parts = append(parts, "\033[1;7m "+label+" \033[0m") // bold + reverse = selected
 		} else {
-			parts = append(parts, "\033[2m "+t+" \033[0m") // dim = inactive
+			parts = append(parts, "\033[2m "+label+" \033[0m") // dim = inactive
 		}
 	}
 	return "  " + strings.Join(parts, " ")
 }
 
-func filterHosts(hosts []Host, tag string) []string {
+func filterHosts(hosts []Host, source string, key string) []string {
 	var names []string
 	for _, h := range hosts {
-		if tag == "" || h.Tag == tag {
+		if key == "" {
 			names = append(names, h.Name)
+			continue
+		}
+		if source == "source" {
+			if h.SourceFile == key {
+				names = append(names, h.Name)
+			}
+		} else {
+			if h.Tag == key {
+				names = append(names, h.Name)
+			}
 		}
 	}
 	return names
@@ -233,8 +280,25 @@ func tabList(statefile string, delta int, sshConfigPath string) {
 	s.save(statefile)
 
 	hosts := loadHosts(sshConfigPath)
-	names := filterHosts(hosts, s.currentTag())
+	names := filterHosts(hosts, s.source, s.currentTag())
 	// Header on line 1, hosts on subsequent lines.
+	fmt.Println(renderHeader(s))
+	fmt.Print(strings.Join(names, "\n"))
+}
+
+// tabSourceToggle is called by fzf Ctrl-T binding. It toggles the tab source between
+// "tag" and "source", resets to index 0, and outputs the reloaded list.
+func tabSourceToggle(statefile string, sshConfigPath string) {
+	s := loadTabState(statefile)
+	if s.source == "source" {
+		s.source = "tag"
+	} else {
+		s.source = "source"
+	}
+	hosts := loadHosts(sshConfigPath)
+	s = buildTabState(hosts, s.source)
+	s.save(statefile)
+	names := filterHosts(hosts, s.source, "")
 	fmt.Println(renderHeader(s))
 	fmt.Print(strings.Join(names, "\n"))
 }
@@ -248,16 +312,16 @@ func loadHosts(sshConfigPath string) []Host {
 	return hosts
 }
 
-func sshMode(args []string, sshConfigPath string) {
+func sshMode(args []string, sshConfigPath string, tabSource string) {
 	hosts := loadHosts(sshConfigPath)
 
 	// Build and persist initial tab state
 	statefile := tempStateFile()
-	s := buildTabState(hosts)
+	s := buildTabState(hosts, tabSource)
 	s.save(statefile)
 	defer os.Remove(statefile)
 
-	names := filterHosts(hosts, "") // All
+	names := filterHosts(hosts, tabSource, "") // All
 	exPath := selfPath()
 
 	// Initial input: header on line 1 (consumed by --header-lines=1), hosts follow.
@@ -272,6 +336,8 @@ func sshMode(args []string, sshConfigPath string) {
 	bindCopy := fmt.Sprintf("ctrl-y:execute(%s --copy-ssh-cmd {} %s)", exPath, sshConfigPath)
 	// Ctrl-P refreshes the preview pane to show host connectivity check.
 	bindCheck := fmt.Sprintf("ctrl-p:preview(%s --check-host {} %s)", exPath, sshConfigPath)
+	// Ctrl-T toggles tab source between tag and source file grouping.
+	bindToggleSource := fmt.Sprintf("ctrl-t:reload(%s --tab-source-toggle %s %s)", exPath, statefile, sshConfigPath)
 
 	selected := runFzf(
 		initialInput,
@@ -290,6 +356,7 @@ func sshMode(args []string, sshConfigPath string) {
 			"--bind=" + bindConfigView,
 			"--bind=" + bindCopy,
 			"--bind=" + bindCheck,
+			"--bind=" + bindToggleSource,
 		},
 	)
 	if selected == "" {
@@ -298,10 +365,11 @@ func sshMode(args []string, sshConfigPath string) {
 
 	fmt.Fprintln(os.Stderr, msgs.msgConnectTo, selected)
 	recordHistory(selected)
-	// Inject -F into ssh args if the config path came from env/config (not already in args).
-	sshArgs := args
-	if extractSSHConfigFlagValue(args) == "" {
-		sshArgs = append([]string{"-F", sshConfigPath}, args...)
+	// Strip ffh-only flags and inject -F if needed before passing args to ssh.
+	cleanArgs := stripTabSourceFlag(args)
+	sshArgs := cleanArgs
+	if extractSSHConfigFlagValue(cleanArgs) == "" {
+		sshArgs = append([]string{"-F", sshConfigPath}, cleanArgs...)
 	}
 	execSSH(selected, sshArgs)
 }

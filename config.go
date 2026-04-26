@@ -80,3 +80,49 @@ func resolveHostsPath(cliArg string) string {
 	}
 	return defaultHostsPath
 }
+
+// resolveTabSource determines how tabs are grouped ("tag" or "source").
+// Priority: --tab-source CLI arg > FFH_TAB_SOURCE env var > tab_source in config file > "tag"
+func resolveTabSource(cliArg string) string {
+	if cliArg != "" {
+		return normalizeTabSource(cliArg)
+	}
+	if v := os.Getenv("FFH_TAB_SOURCE"); v != "" {
+		return normalizeTabSource(v)
+	}
+	if v := loadConfig()["tab_source"]; v != "" {
+		return normalizeTabSource(v)
+	}
+	return "source"
+}
+
+func normalizeTabSource(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if s == "source" {
+		return "source"
+	}
+	return "tag"
+}
+
+// extractTabSourceFlagValue returns the value of --tab-source in args, or "".
+func extractTabSourceFlagValue(args []string) string {
+	for i, arg := range args {
+		if arg == "--tab-source" && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+// stripTabSourceFlag removes --tab-source and its value from args before passing to ssh.
+func stripTabSourceFlag(args []string) []string {
+	var out []string
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--tab-source" {
+			i++ // skip value
+			continue
+		}
+		out = append(out, args[i])
+	}
+	return out
+}

@@ -105,21 +105,27 @@ Usage:
   ffh --exec <tag> <command...>        run a command on all hosts with the given tag
 
 Options:
-  -h, --help     show this help
-  -v, --version  show version
-  -F <file>      use alternative SSH config file (overrides env/config)
+  -h, --help                  show this help
+  -v, --version               show version
+  -F <file>                   use alternative SSH config file (overrides env/config)
+  --tab-source <tag|source>   group tabs by source config file (default) or by Tag
 
 SSH config file (priority: -F flag > FFH_SSH_CONFIG env > ssh_config in config > ~/.ssh/config):
   FFH_SSH_CONFIG=/path/to/ssh_config ffh
   echo "ssh_config = /path/to/ssh_config" >> ~/.config/ffh/config
+
+Tab source (priority: --tab-source flag > FFH_TAB_SOURCE env > tab_source in config > tag):
+  FFH_TAB_SOURCE=source ffh
+  echo "tab_source = source" >> ~/.config/ffh/config
 
 fzf key bindings:
   Enter          connect to selected host
   Ctrl-G         show full ssh -G config for focused host
   Ctrl-Y         copy ssh command to clipboard
   Ctrl-P         check TCP connectivity to focused host
-  Tab            next tag tab
-  Shift-Tab      previous tag tab
+  Ctrl-T         toggle tab grouping between Tag and source file
+  Tab            next tab
+  Shift-Tab      previous tab
   Esc / Ctrl-C   cancel
 
 SSH config directives (ffh-specific):
@@ -130,14 +136,15 @@ Language:
   Set FFH_LANG=ja or add "language = ja" to ~/.config/ffh/config for Japanese.
 
 Examples:
-  ffh                           open host selector
-  ffh -F ~/work/ssh_config      use alternative SSH config
-  ffh -L 8080:localhost:8080    forward port after selection
-  ffh --hosts                   select from hosts file
-  ffh --hosts /etc/hosts        select from specific hosts file
-  ffh --history                 show connection history
-  ffh --check                   detect duplicate hosts
-  ffh --exec web uptime         run uptime on all hosts tagged "web"
+  ffh                              open host selector
+  ffh -F ~/work/ssh_config         use alternative SSH config
+  ffh -L 8080:localhost:8080       forward port after selection
+  ffh --tab-source source          group tabs by config file instead of Tag
+  ffh --hosts                      select from hosts file
+  ffh --hosts /etc/hosts           select from specific hosts file
+  ffh --history                    show connection history
+  ffh --check                      detect duplicate hosts
+  ffh --exec web uptime            run uptime on all hosts tagged "web"
 `, ver)
 		},
 		tabAll:                  "All",
@@ -206,21 +213,27 @@ func jaMessages() messages {
   ffh --exec <タグ> <コマンド...>        指定タグの全ホストでコマンドを実行
 
 オプション:
-  -h, --help     ヘルプを表示
-  -v, --version  バージョンを表示
-  -F <ファイル>  代替 SSH config ファイルを指定（環境変数・設定ファイルより優先）
+  -h, --help                        ヘルプを表示
+  -v, --version                     バージョンを表示
+  -F <ファイル>                     代替 SSH config ファイルを指定（環境変数・設定ファイルより優先）
+  --tab-source <tag|source>         タブをソースファイル（デフォルト）またはタグで分類
 
 SSH config ファイルの優先順位 (-F フラグ > FFH_SSH_CONFIG 環境変数 > 設定ファイルの ssh_config > ~/.ssh/config):
   FFH_SSH_CONFIG=/path/to/ssh_config ffh
   echo "ssh_config = /path/to/ssh_config" >> ~/.config/ffh/config
+
+タブソースの優先順位 (--tab-source フラグ > FFH_TAB_SOURCE 環境変数 > 設定ファイルの tab_source > tag):
+  FFH_TAB_SOURCE=source ffh
+  echo "tab_source = source" >> ~/.config/ffh/config
 
 fzf キーバインド:
   Enter          選択したホストに SSH 接続
   Ctrl-G         フォーカス中ホストの ssh -G 全設定を表示
   Ctrl-Y         ssh コマンドをクリップボードにコピー
   Ctrl-P         フォーカス中ホストの TCP 疎通確認
-  Tab            次のタグタブへ移動
-  Shift-Tab      前のタグタブへ移動
+  Ctrl-T         タブのグループをタグとソースファイルで切り替え
+  Tab            次のタブへ移動
+  Shift-Tab      前のタブへ移動
   Esc / Ctrl-C   キャンセル
 
 SSH config ディレクティブ (ffh 独自):
@@ -231,14 +244,15 @@ SSH config ディレクティブ (ffh 独自):
   FFH_LANG=en を設定するか ~/.config/ffh/config に "language = en" を追加すると英語になります。
 
 使用例:
-  ffh                              ホスト選択画面を開く
-  ffh -F ~/work/ssh_config         代替 SSH config を使用
-  ffh -L 8080:localhost:8080       選択後にポートフォワード
-  ffh --hosts                      hosts ファイルから選択
-  ffh --hosts /etc/hosts           指定した hosts ファイルから選択
-  ffh --history                    接続履歴を表示
-  ffh --check                      重複ホストを検出
-  ffh --exec web uptime            "web" タグの全ホストで uptime を実行
+  ffh                                ホスト選択画面を開く
+  ffh -F ~/work/ssh_config           代替 SSH config を使用
+  ffh -L 8080:localhost:8080         選択後にポートフォワード
+  ffh --tab-source source            タブをソースファイルで分類
+  ffh --hosts                        hosts ファイルから選択
+  ffh --hosts /etc/hosts             指定した hosts ファイルから選択
+  ffh --history                      接続履歴を表示
+  ffh --check                        重複ホストを検出
+  ffh --exec web uptime              "web" タグの全ホストで uptime を実行
 `, ver)
 		},
 		tabAll:                  "すべて",
