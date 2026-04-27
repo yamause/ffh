@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 const defaultHostsPath = "/etc/hosts"
@@ -31,6 +32,18 @@ func resolveSSHConfigPath(cliArg string) string {
 	return filepath.Join(home, ".ssh", "config")
 }
 
+// splitAtDoubleDash splits args at the first "--" separator.
+// Everything before "--" is returned as ffhArgs; everything after as sshArgs.
+// If "--" is absent, sshArgs is nil.
+func splitAtDoubleDash(args []string) (ffhArgs, sshArgs []string) {
+	for i, a := range args {
+		if a == "--" {
+			return args[:i], args[i+1:]
+		}
+	}
+	return args, nil
+}
+
 // extractSSHConfigFlagValue returns the value of -F in args, or "" if not present.
 func extractSSHConfigFlagValue(args []string) string {
 	for i, arg := range args {
@@ -41,29 +54,64 @@ func extractSSHConfigFlagValue(args []string) string {
 	return ""
 }
 
+// unknownFFHFlag returns the first unrecognised flag in ffhArgs, or "".
+// Known ffh flags are -F <value> and --tab-source <value>.
+func unknownFFHFlag(ffhArgs []string) string {
+	i := 0
+	for i < len(ffhArgs) {
+		arg := ffhArgs[i]
+		if arg == "-F" || arg == "--tab-source" {
+			i += 2
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			return arg
+		}
+		i++
+	}
+	return ""
+}
+
+var (
+	configMu     sync.Mutex
+	cachedConfig map[string]string
+)
+
 // loadConfig parses ~/.config/ffh/config and returns key-value pairs.
-// Format: key = value (lines starting with # are comments)
+// Format: key = value (lines starting with # are comments).
+// Result is cached for the lifetime of the process.
 func loadConfig() map[string]string {
+	configMu.Lock()
+	defer configMu.Unlock()
+	if cachedConfig != nil {
+		return cachedConfig
+	}
 	cfg := make(map[string]string)
 	f, err := os.Open(configFilePath())
-	if err != nil {
-		return cfg
+	if err == nil {
+		defer f.Close()
+		scanner := bufio.NewScanner(f)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			k, v, ok := strings.Cut(line, "=")
+			if !ok {
+				continue
+			}
+			cfg[strings.TrimSpace(k)] = strings.TrimSpace(v)
+		}
 	}
-	defer f.Close()
+	cachedConfig = cfg
+	return cachedConfig
+}
 
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		k, v, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		cfg[strings.TrimSpace(k)] = strings.TrimSpace(v)
-	}
-	return cfg
+// resetConfigCache clears the loadConfig cache. Only used in tests.
+func resetConfigCache() {
+	configMu.Lock()
+	cachedConfig = nil
+	configMu.Unlock()
 }
 
 // resolveHostsPath determines the hosts file to use.
@@ -114,15 +162,4 @@ func extractTabSourceFlagValue(args []string) string {
 	return ""
 }
 
-// stripTabSourceFlag removes --tab-source and its value from args before passing to ssh.
-func stripTabSourceFlag(args []string) []string {
-	var out []string
-	for i := 0; i < len(args); i++ {
-		if args[i] == "--tab-source" {
-			i++ // skip value
-			continue
-		}
-		out = append(out, args[i])
-	}
-	return out
-}
+

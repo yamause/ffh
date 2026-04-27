@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 )
 
@@ -67,6 +69,24 @@ func findHistoryEntry(host string) *historyEntry {
 		}
 	}
 	return nil
+}
+
+// loadHistorySorted returns all history entries sorted by most recently used.
+func loadHistorySorted() []historyEntry {
+	entries := loadHistory()
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].LastUsed.After(entries[j].LastUsed)
+	})
+	return entries
+}
+
+// formatHistoryLine formats a history entry for display in fzf.
+func formatHistoryLine(e historyEntry) string {
+	return fmt.Sprintf("%-30s  %s  x%d",
+		e.Host,
+		e.LastUsed.Format("2006-01-02 15:04"),
+		e.ConnCount,
+	)
 }
 
 // deleteHistoryEntry removes the entry for host. Returns true if found.

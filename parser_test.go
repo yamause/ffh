@@ -93,7 +93,7 @@ func TestParseFile_DescriptionMarkerWithBody(t *testing.T) {
 # コメントをここに記載
 # 複数行の入力可能
 Host devstep
-    HostName 10.198.255.254
+    HostName 192.0.2.10
     Port 10100
 `)
 	hosts, err := parseFile(path)
@@ -286,5 +286,38 @@ func TestParseSSHConfig_DuplicateFirstWins(t *testing.T) {
 	}
 	if hosts[0].HostName != "10.0.0.1" {
 		t.Errorf("first occurrence should win, got HostName %q", hosts[0].HostName)
+	}
+}
+
+func TestParseFile_MultipleHostNames(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "config", "Host web-1 web-2\n\tHostName 192.0.2.1\n\tUser admin\n")
+	hosts, err := parseFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hosts) != 2 {
+		t.Fatalf("want 2 hosts, got %d", len(hosts))
+	}
+	names := map[string]bool{hosts[0].Name: true, hosts[1].Name: true}
+	if !names["web-1"] || !names["web-2"] {
+		t.Errorf("expected web-1 and web-2, got %v", names)
+	}
+	for _, h := range hosts {
+		if h.HostName != "192.0.2.1" || h.User != "admin" {
+			t.Errorf("wrong directives for %s: %+v", h.Name, h)
+		}
+	}
+}
+
+func TestParseFile_MixedWildcardAndValidNames(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "config", "Host web* db-1\n\tHostName 192.0.2.2\n")
+	hosts, err := parseFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hosts) != 1 || hosts[0].Name != "db-1" {
+		t.Errorf("expected only db-1, got %v", hosts)
 	}
 }

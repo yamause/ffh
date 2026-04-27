@@ -7,6 +7,7 @@ import (
 )
 
 func TestResolveHostsPath_CLIArgWins(t *testing.T) {
+	t.Cleanup(resetConfigCache)
 	t.Setenv("FFH_HOSTS_FILE", "/env/hosts")
 	got := resolveHostsPath("/cli/hosts")
 	if got != "/cli/hosts" {
@@ -15,6 +16,7 @@ func TestResolveHostsPath_CLIArgWins(t *testing.T) {
 }
 
 func TestResolveHostsPath_EnvVarWins(t *testing.T) {
+	t.Cleanup(resetConfigCache)
 	t.Setenv("FFH_HOSTS_FILE", "/env/hosts")
 	got := resolveHostsPath("")
 	if got != "/env/hosts" {
@@ -23,6 +25,7 @@ func TestResolveHostsPath_EnvVarWins(t *testing.T) {
 }
 
 func TestResolveHostsPath_ConfigFileWins(t *testing.T) {
+	t.Cleanup(resetConfigCache)
 	t.Setenv("FFH_HOSTS_FILE", "")
 
 	dir := t.TempDir()
@@ -45,6 +48,7 @@ func TestResolveHostsPath_ConfigFileWins(t *testing.T) {
 }
 
 func TestResolveHostsPath_Default(t *testing.T) {
+	t.Cleanup(resetConfigCache)
 	t.Setenv("FFH_HOSTS_FILE", "")
 
 	dir := t.TempDir() // no config file here
@@ -58,7 +62,57 @@ func TestResolveHostsPath_Default(t *testing.T) {
 	}
 }
 
+func TestSplitAtDoubleDash(t *testing.T) {
+	cases := []struct {
+		args        []string
+		wantFFH     []string
+		wantSSH     []string
+	}{
+		{[]string{"-F", "cfg", "--", "-L", "8080:localhost:8080"}, []string{"-F", "cfg"}, []string{"-L", "8080:localhost:8080"}},
+		{[]string{"-F", "cfg"}, []string{"-F", "cfg"}, nil},
+		{[]string{"--", "-v"}, []string{}, []string{"-v"}},
+		{[]string{}, []string{}, nil},
+		{[]string{"--"}, []string{}, []string{}},
+	}
+	for _, c := range cases {
+		ffh, ssh := splitAtDoubleDash(c.args)
+		if len(ffh) != len(c.wantFFH) {
+			t.Errorf("args=%v: ffhArgs=%v, want %v", c.args, ffh, c.wantFFH)
+			continue
+		}
+		for i := range ffh {
+			if ffh[i] != c.wantFFH[i] {
+				t.Errorf("args=%v: ffhArgs[%d]=%q, want %q", c.args, i, ffh[i], c.wantFFH[i])
+			}
+		}
+		if len(ssh) != len(c.wantSSH) {
+			t.Errorf("args=%v: sshArgs=%v, want %v", c.args, ssh, c.wantSSH)
+		}
+	}
+}
+
+func TestUnknownFFHFlag(t *testing.T) {
+	cases := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"-F", "cfg", "--tab-source", "tag"}, ""},
+		{[]string{"-F", "cfg"}, ""},
+		{[]string{}, ""},
+		{[]string{"-L", "8080:localhost:8080"}, "-L"},
+		{[]string{"--tab-source", "tag", "--unknown"}, "--unknown"},
+		{[]string{"-F", "cfg", "--tab-source"}, ""}, // value missing — out of bounds handled gracefully
+	}
+	for _, c := range cases {
+		got := unknownFFHFlag(c.args)
+		if got != c.want {
+			t.Errorf("args=%v: got %q, want %q", c.args, got, c.want)
+		}
+	}
+}
+
 func TestLoadConfig_CommentsAndBlanks(t *testing.T) {
+	t.Cleanup(resetConfigCache)
 	dir := t.TempDir()
 	cfgDir := filepath.Join(dir, ".config", "ffh")
 	if err := os.MkdirAll(cfgDir, 0700); err != nil {

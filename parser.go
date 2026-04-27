@@ -95,13 +95,20 @@ func parseFile(path string) ([]Host, error) {
 
 	var hosts []Host
 	var current *Host
+	var extraNames []string
 	var pendingComments []string
 	inMatch := false
 
 	finalize := func() {
 		if current != nil {
 			hosts = append(hosts, *current)
+			for _, name := range extraNames {
+				clone := *current
+				clone.Name = name
+				hosts = append(hosts, clone)
+			}
 			current = nil
+			extraNames = nil
 		}
 	}
 
@@ -141,15 +148,20 @@ func parseFile(path string) ([]Host, error) {
 		if keyword == "host" {
 			finalize()
 			inMatch = false
-			pattern := fields[1]
-			if strings.ContainsAny(pattern, "*?") {
+			var validNames []string
+			for _, name := range fields[1:] {
+				if !strings.ContainsAny(name, "*?") {
+					validNames = append(validNames, name)
+				}
+			}
+			if len(validNames) == 0 {
 				pendingComments = nil
 				continue
 			}
-			h := &Host{Name: pattern, SourceFile: path}
-			h.Description = extractDescription(pendingComments)
+			desc := extractDescription(pendingComments)
 			pendingComments = nil
-			current = h
+			current = &Host{Name: validNames[0], SourceFile: path, Description: desc}
+			extraNames = validNames[1:]
 			continue
 		}
 
@@ -223,6 +235,16 @@ func extractDescription(comments []string) string {
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+// findHost returns a pointer to the first Host in hosts whose Name matches name, or nil.
+func findHost(hosts []Host, name string) *Host {
+	for i := range hosts {
+		if hosts[i].Name == name {
+			return &hosts[i]
+		}
+	}
+	return nil
 }
 
 func expandHome(path, home string) string {
