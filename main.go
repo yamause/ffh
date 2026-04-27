@@ -13,10 +13,21 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unsafe"
 )
 
 // version is set at build time via -ldflags "-X main.version=x.y.z".
 var version = "dev"
+
+const (
+	ansiBold   = "\033[1m"
+	ansiReset  = "\033[0m"
+	ansiCyan   = "\033[36m"
+	ansiYellow = "\033[33m"
+	ansiGreen  = "\033[32m"
+	ansiRed    = "\033[31m"
+	ansiDim    = "\033[2m"
+)
 
 func main() {
 	initMessages()
@@ -66,6 +77,18 @@ func main() {
 		return
 	}
 
+	// Internal command: --edit-host-option <hostname> <sshconfig> [<keyword> [<value...>]]
+	// Opens a fzf-based input dialog to edit one SSH config directive for hostname.
+	if len(args) >= 3 && args[0] == "--edit-host-option" {
+		optionLine := strings.Join(args[3:], " ")
+		if err := editHostOption(args[1], resolveSSHConfigPath(args[2]), optionLine); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
+
 	// Internal command used by ctrl-g execute binding: --ssh-config-view <hostname> [<sshconfig>]
 	// Launches a nested fzf showing ssh -G output with per-option descriptions.
 	if len(args) >= 2 && args[0] == "--ssh-config-view" {
@@ -109,9 +132,12 @@ func main() {
 		return
 	}
 
+	// Split at "--": everything before is ffh flags, everything after goes to ssh.
+	ffhArgs, sshArgs := splitAtDoubleDash(args)
+
 	// ffh --history [--delete <host> | --list]
-	if len(args) >= 1 && args[0] == "--history" {
-		rest := args[1:]
+	if len(ffhArgs) >= 1 && ffhArgs[0] == "--history" {
+		rest := ffhArgs[1:]
 		if len(rest) >= 2 && rest[0] == "--delete" {
 			host := rest[1]
 			if deleteHistoryEntry(host) {
@@ -128,42 +154,48 @@ func main() {
 			return
 		}
 		sshConfigPath := resolveSSHConfigPath(extractSSHConfigFlagValue(rest))
-		historyMode(rest, sshConfigPath)
+		historyMode(sshArgs, sshConfigPath)
 		return
 	}
 
-	// ffh --check [<sshconfig>]
-	if len(args) >= 1 && args[0] == "--check" {
-		var configArg string
-		if len(args) >= 2 {
-			configArg = args[1]
-		}
+	// ffh --check [-F <sshconfig>]
+	if len(ffhArgs) >= 1 && ffhArgs[0] == "--check" {
+		configArg := extractSSHConfigFlagValue(ffhArgs[1:])
 		checkDuplicates(resolveSSHConfigPath(configArg))
 		return
 	}
 
-	// ffh --exec <tag> <command...>
-	if len(args) >= 3 && args[0] == "--exec" {
-		sshConfigPath := resolveSSHConfigPath(extractSSHConfigFlagValue(args))
-		execTag(args[1], args[2:], sshConfigPath)
+	// ffh --exec <tag> <command...>  (command args go after tag, no -- needed)
+	if len(ffhArgs) >= 3 && ffhArgs[0] == "--exec" {
+		sshConfigPath := resolveSSHConfigPath(extractSSHConfigFlagValue(ffhArgs))
+		execTag(ffhArgs[1], ffhArgs[2:], sshConfigPath)
 		return
 	}
 
-	if len(args) >= 1 && args[0] == "--hosts" {
-		rest := args[1:]
+	// ffh --hosts [path] [-- ssh-options]
+	if len(ffhArgs) >= 1 && ffhArgs[0] == "--hosts" {
+		rest := ffhArgs[1:]
 		var cliPath string
 		if len(rest) >= 1 && !strings.HasPrefix(rest[0], "-") {
 			cliPath = rest[0]
 			rest = rest[1:]
 		}
-		hostsMode(resolveHostsPath(cliPath), rest)
+		if unknown := unknownFFHFlag(rest); unknown != "" {
+			fmt.Fprintf(os.Stderr, msgs.errUnknownFlag+"\n", unknown)
+			os.Exit(1)
+		}
+		hostsMode(resolveHostsPath(cliPath), sshArgs)
 		return
 	}
 
-	// Extract -F and --tab-source before passing args to sshMode.
-	sshConfigPath := resolveSSHConfigPath(extractSSHConfigFlagValue(args))
-	tabSource := resolveTabSource(extractTabSourceFlagValue(args))
-	sshMode(args, sshConfigPath, tabSource)
+	if unknown := unknownFFHFlag(ffhArgs); unknown != "" {
+		fmt.Fprintf(os.Stderr, msgs.errUnknownFlag+"\n", unknown)
+		os.Exit(1)
+	}
+
+	sshConfigPath := resolveSSHConfigPath(extractSSHConfigFlagValue(ffhArgs))
+	tabSource := resolveTabSource(extractTabSourceFlagValue(ffhArgs))
+	sshMode(sshArgs, sshConfigPath, tabSource)
 }
 
 // tabState holds the ordered tag list and current index, persisted in a temp file.
@@ -236,17 +268,161 @@ func tabDisplayName(value string, source string) string {
 	return value
 }
 
-func renderHeader(s tabState) string {
-	var parts []string
-	for i, t := range s.tags {
-		label := tabDisplayName(t, s.source)
-		if i == s.idx {
-			parts = append(parts, "\033[1;7m "+label+" \033[0m") // bold + reverse = selected
-		} else {
-			parts = append(parts, "\033[2m "+label+" \033[0m") // dim = inactive
+// terminalWidth returns the terminal column count via TIOCGWINSZ.
+// FZF_COLUMNS is checked first because fzf sets it in reload/execute contexts.
+// Falls back to 80 if unavailable.
+func terminalWidth() int {
+	if s := os.Getenv("FZF_COLUMNS"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			return n
 		}
 	}
-	return "  " + strings.Join(parts, " ")
+	type winsize struct {
+		Row, Col, Xpixel, Ypixel uint16
+	}
+	var ws winsize
+	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL,
+		uintptr(syscall.Stdout), syscall.TIOCGWINSZ, uintptr(unsafe.Pointer(&ws))); errno == 0 && ws.Col > 0 {
+		return int(ws.Col)
+	}
+	return 80
+}
+
+// stripAnsi returns the visible (non-ANSI) length of s.
+func stripAnsiLen(s string) int {
+	n := 0
+	inEsc := false
+	for _, r := range s {
+		if inEsc {
+			if r == 'm' {
+				inEsc = false
+			}
+			continue
+		}
+		if r == '\033' {
+			inEsc = true
+			continue
+		}
+		n++
+	}
+	return n
+}
+
+// renderHeader builds a single-line tab bar. When all tabs fit within the
+// terminal width they are shown in full. Otherwise a sliding window centred on
+// the selected tab is shown, with "←" / "→" indicators for hidden tabs.
+func renderHeader(s tabState) string {
+	width := terminalWidth()
+	const indent = "  "
+	const arrowL = "\033[2m ← \033[0m"
+	const arrowR = "\033[2m → \033[0m"
+	arrowW := stripAnsiLen(arrowL) // == stripAnsiLen(arrowR) == 3
+
+	type tabPart struct {
+		text string
+		w    int
+	}
+	parts := make([]tabPart, len(s.tags))
+	for i, t := range s.tags {
+		label := tabDisplayName(t, s.source)
+		var text string
+		if i == s.idx {
+			text = "\033[1;7m " + label + " \033[0m"
+		} else {
+			text = "\033[2m " + label + " \033[0m"
+		}
+		parts[i] = tabPart{text: text, w: stripAnsiLen(text)}
+	}
+
+	// Calculate total width for all tabs.
+	total := len(indent)
+	for i, p := range parts {
+		if i > 0 {
+			total++
+		}
+		total += p.w
+	}
+	if total <= width {
+		var sb strings.Builder
+		sb.WriteString(indent)
+		for i, p := range parts {
+			if i > 0 {
+				sb.WriteString(" ")
+			}
+			sb.WriteString(p.text)
+		}
+		return sb.String() + "\n"
+	}
+
+	// Sliding window: expand outward from the selected tab until we run out of space.
+	lo, hi := s.idx, s.idx
+
+	windowWidth := func() int {
+		w := len(indent)
+		if lo > 0 {
+			w += arrowW + 1
+		}
+		if hi < len(parts)-1 {
+			w += 1 + arrowW
+		}
+		for i := lo; i <= hi; i++ {
+			if i > lo {
+				w++
+			}
+			w += parts[i].w
+		}
+		return w
+	}
+
+	for {
+		expanded := false
+		if lo > 0 {
+			extra := parts[lo-1].w + 1
+			// after expanding left: lo-1 might eliminate the left arrow if lo-1==0
+			var arrowSave int
+			if lo == 1 {
+				arrowSave = arrowW + 1
+			}
+			if windowWidth()+extra-arrowSave <= width {
+				lo--
+				expanded = true
+				continue
+			}
+		}
+		if hi < len(parts)-1 {
+			extra := 1 + parts[hi+1].w
+			var arrowSave int
+			if hi+1 == len(parts)-1 {
+				arrowSave = 1 + arrowW
+			}
+			if windowWidth()+extra-arrowSave <= width {
+				hi++
+				expanded = true
+				continue
+			}
+		}
+		if !expanded {
+			break
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString(indent)
+	if lo > 0 {
+		sb.WriteString(arrowL)
+		sb.WriteString(" ")
+	}
+	for i := lo; i <= hi; i++ {
+		if i > lo {
+			sb.WriteString(" ")
+		}
+		sb.WriteString(parts[i].text)
+	}
+	if hi < len(parts)-1 {
+		sb.WriteString(" ")
+		sb.WriteString(arrowR)
+	}
+	return sb.String() + "\n"
 }
 
 func filterHosts(hosts []Host, source string, key string) []string {
@@ -281,8 +457,8 @@ func tabList(statefile string, delta int, sshConfigPath string) {
 
 	hosts := loadHosts(sshConfigPath)
 	names := filterHosts(hosts, s.source, s.currentTag())
-	// Header on line 1, hosts on subsequent lines.
-	fmt.Println(renderHeader(s))
+	// Header on line 1 (consumed by --header-lines=1), hosts follow.
+	fmt.Print(renderHeader(s))
 	fmt.Print(strings.Join(names, "\n"))
 }
 
@@ -299,7 +475,7 @@ func tabSourceToggle(statefile string, sshConfigPath string) {
 	s = buildTabState(hosts, s.source)
 	s.save(statefile)
 	names := filterHosts(hosts, s.source, "")
-	fmt.Println(renderHeader(s))
+	fmt.Print(renderHeader(s))
 	fmt.Print(strings.Join(names, "\n"))
 }
 
@@ -325,7 +501,7 @@ func sshMode(args []string, sshConfigPath string, tabSource string) {
 	exPath := selfPath()
 
 	// Initial input: header on line 1 (consumed by --header-lines=1), hosts follow.
-	initialInput := renderHeader(s) + "\n" + strings.Join(names, "\n")
+	initialInput := renderHeader(s) + strings.Join(names, "\n")
 
 	// Tab = next tag, Shift-Tab = prev tag.
 	bindNext := fmt.Sprintf("tab:reload(%s --tab-list %s 1 %s)", exPath, statefile, sshConfigPath)
@@ -365,13 +541,12 @@ func sshMode(args []string, sshConfigPath string, tabSource string) {
 
 	fmt.Fprintln(os.Stderr, msgs.msgConnectTo, selected)
 	recordHistory(selected)
-	// Strip ffh-only flags and inject -F if needed before passing args to ssh.
-	cleanArgs := stripTabSourceFlag(args)
-	sshArgs := cleanArgs
-	if extractSSHConfigFlagValue(cleanArgs) == "" {
-		sshArgs = append([]string{"-F", sshConfigPath}, cleanArgs...)
+	// args is already ssh-only (split at "--"); just prepend -F if not already present.
+	sshPassArgs := args
+	if extractSSHConfigFlagValue(args) == "" {
+		sshPassArgs = append([]string{"-F", sshConfigPath}, args...)
 	}
-	execSSH(selected, sshArgs)
+	execSSH(selected, sshPassArgs)
 }
 
 func hostsMode(path string, args []string) {
@@ -411,33 +586,19 @@ func printPreview(name string, sshConfigPath string) error {
 	if err != nil {
 		return fmt.Errorf("parse SSH config: %w", err)
 	}
-
-	var found *Host
-	for i := range hosts {
-		if hosts[i].Name == name {
-			found = &hosts[i]
-			break
-		}
-	}
+	found := findHost(hosts, name)
 	if found == nil {
 		return fmt.Errorf("host not found: %s", name)
 	}
-
-	bold := "\033[1m"
-	reset := "\033[0m"
-	cyan := "\033[36m"
-	yellow := "\033[33m"
-	green := "\033[32m"
-	dim := "\033[2m"
 
 	label := func(k, v string) {
 		if v == "" {
 			return
 		}
-		fmt.Printf("  %s%-14s%s %s%s%s\n", bold, k+":", reset, cyan, v, reset)
+		fmt.Printf("  %s%-14s%s %s%s%s\n", ansiBold, k+":", ansiReset, ansiCyan, v, ansiReset)
 	}
 
-	fmt.Printf("%s  Host:%s         %s%s%s\n", bold, reset, cyan, found.Name, reset)
+	fmt.Printf("%s  Host:%s         %s%s%s\n", ansiBold, ansiReset, ansiCyan, found.Name, ansiReset)
 	fmt.Println("  " + strings.Repeat("─", 32))
 
 	port := found.Port
@@ -454,40 +615,33 @@ func printPreview(name string, sshConfigPath string) error {
 	src := unexpandHome(found.SourceFile, must(os.UserHomeDir()))
 	label("Source", src)
 
-	// Show connection history if available
 	if e := findHistoryEntry(name); e != nil {
 		ago := formatAgo(e.LastUsed)
 		histLine := fmt.Sprintf("%s (%s x%d)", ago, msgs.labelHistoryConnected, e.ConnCount)
-		fmt.Printf("  %s%-14s%s %s%s%s\n", bold, msgs.labelLastUsed+":", reset, green, histLine, reset)
+		fmt.Printf("  %s%-14s%s %s%s%s\n", ansiBold, msgs.labelLastUsed+":", ansiReset, ansiGreen, histLine, ansiReset)
 	}
 
 	if found.Description != "" {
 		fmt.Println()
 		fmt.Println("  " + strings.Repeat("─", 32))
-		fmt.Printf("  %s%s%s\n", bold, msgs.labelDescriptionSection, reset)
+		fmt.Printf("  %s%s%s\n", ansiBold, msgs.labelDescriptionSection, ansiReset)
 		for _, line := range strings.Split(found.Description, "\n") {
-			fmt.Printf("  %s%s%s\n", yellow, line, reset)
+			fmt.Printf("  %s%s%s\n", ansiYellow, line, ansiReset)
 		}
 	}
 
-	_ = dim
 	return nil
 }
 
 // printHostCheck performs a TCP dial to the host's SSH port and prints UP/DOWN status.
+// Output goes to stdout because this function is called from fzf --preview.
 func printHostCheck(name string, sshConfigPath string) {
 	hosts, err := ParseSSHConfig(sshConfigPath)
 	if err != nil {
 		fmt.Println(msgs.errParseSSHConfig, err)
 		return
 	}
-	var found *Host
-	for i := range hosts {
-		if hosts[i].Name == name {
-			found = &hosts[i]
-			break
-		}
-	}
+	found := findHost(hosts, name)
 	if found == nil {
 		fmt.Println(msgs.errHostNotFound, name)
 		return
@@ -503,11 +657,6 @@ func printHostCheck(name string, sshConfigPath string) {
 	}
 	addr := net.JoinHostPort(target, port)
 
-	green := "\033[32m"
-	red := "\033[31m"
-	bold := "\033[1m"
-	reset := "\033[0m"
-
 	start := time.Now()
 	conn, dialErr := net.DialTimeout("tcp", addr, 3*time.Second)
 	elapsed := time.Since(start)
@@ -515,12 +664,12 @@ func printHostCheck(name string, sshConfigPath string) {
 	if dialErr == nil {
 		conn.Close()
 		fmt.Printf("%s%s● %s%s  %s (%dms)%s\n",
-			bold, green, reset, green,
-			msgs.statusUp, elapsed.Milliseconds(), reset)
+			ansiBold, ansiGreen, ansiReset, ansiGreen,
+			msgs.statusUp, elapsed.Milliseconds(), ansiReset)
 	} else {
 		fmt.Printf("%s%s○ %s%s  %s%s\n",
-			bold, red, reset, red,
-			msgs.statusDown, reset)
+			ansiBold, ansiRed, ansiReset, ansiRed,
+			msgs.statusDown, ansiReset)
 	}
 	fmt.Printf("  %s → %s\n", name, addr)
 }
@@ -532,13 +681,7 @@ func copySSHCommand(name string, sshConfigPath string) {
 		fmt.Fprintln(os.Stderr, msgs.errParseSSHConfig, err)
 		return
 	}
-	var found *Host
-	for i := range hosts {
-		if hosts[i].Name == name {
-			found = &hosts[i]
-			break
-		}
-	}
+	found := findHost(hosts, name)
 
 	var parts []string
 	parts = append(parts, "ssh")
@@ -585,23 +728,16 @@ func writeClipboard(text string) error {
 
 // historyMode opens an fzf selector over connection history and connects to the selected host.
 func historyMode(args []string, sshConfigPath string) {
-	entries := loadHistory()
+	entries := loadHistorySorted()
 	if len(entries) == 0 {
 		fmt.Println(msgs.msgHistoryEmpty)
 		return
 	}
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].LastUsed.After(entries[j].LastUsed)
-	})
 
 	exPath := selfPath()
 	lines := make([]string, len(entries))
 	for i, e := range entries {
-		lines[i] = fmt.Sprintf("%-30s  %s  x%d",
-			e.Host,
-			e.LastUsed.Format("2006-01-02 15:04"),
-			e.ConnCount,
-		)
+		lines[i] = formatHistoryLine(e)
 	}
 
 	bindDelete := fmt.Sprintf(
@@ -646,44 +782,12 @@ func historyMode(args []string, sshConfigPath string) {
 
 // printHistoryLines outputs history in the same format used by historyMode for fzf reload.
 func printHistoryLines() {
-	entries := loadHistory()
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].LastUsed.After(entries[j].LastUsed)
-	})
+	entries := loadHistorySorted()
 	lines := make([]string, len(entries))
 	for i, e := range entries {
-		lines[i] = fmt.Sprintf("%-30s  %s  x%d",
-			e.Host,
-			e.LastUsed.Format("2006-01-02 15:04"),
-			e.ConnCount,
-		)
+		lines[i] = formatHistoryLine(e)
 	}
 	fmt.Print(strings.Join(lines, "\n"))
-}
-
-// printHistory prints connection history sorted by most recently used.
-func printHistory() {
-	entries := loadHistory()
-	if len(entries) == 0 {
-		fmt.Println(msgs.msgHistoryEmpty)
-		return
-	}
-	// Sort by most recently used
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].LastUsed.After(entries[j].LastUsed)
-	})
-	bold := "\033[1m"
-	cyan := "\033[36m"
-	reset := "\033[0m"
-	fmt.Printf("%s%-30s %-20s %s%s\n", bold, msgs.colHost, msgs.colLastUsed, msgs.colCount, reset)
-	fmt.Println(strings.Repeat("─", 60))
-	for _, e := range entries {
-		fmt.Printf("%s%-30s%s %-20s %d\n",
-			cyan, e.Host, reset,
-			e.LastUsed.Format("2006-01-02 15:04"),
-			e.ConnCount,
-		)
-	}
 }
 
 // checkDuplicates reports hosts defined in multiple SSH config files.
@@ -710,12 +814,6 @@ func checkDuplicates(sshConfigPath string) {
 		}
 	}
 
-	bold := "\033[1m"
-	yellow := "\033[33m"
-	green := "\033[32m"
-	reset := "\033[0m"
-	dim := "\033[2m"
-
 	var dups []string
 	for name, occ := range seen {
 		if len(occ) > 1 {
@@ -725,20 +823,20 @@ func checkDuplicates(sshConfigPath string) {
 	sort.Strings(dups)
 
 	if len(dups) == 0 {
-		fmt.Printf("%s%s%s\n", green, msgs.msgNoDuplicates, reset)
+		fmt.Printf("%s%s%s\n", ansiGreen, msgs.msgNoDuplicates, ansiReset)
 		return
 	}
 
-	fmt.Printf("%s%s%s\n\n", bold, msgs.msgDuplicatesFound, reset)
+	fmt.Printf("%s%s%s\n\n", ansiBold, msgs.msgDuplicatesFound, ansiReset)
 	for _, name := range dups {
 		occ := seen[name]
-		fmt.Printf("%s%s%s\n", bold, name, reset)
+		fmt.Printf("%s%s%s\n", ansiBold, name, ansiReset)
 		for i, o := range occ {
 			src := unexpandHome(o.file, must(os.UserHomeDir()))
 			if i == 0 {
-				fmt.Printf("  %s✓ %s%s  %s(%s)%s\n", green, src, reset, dim, msgs.labelEffective, reset)
+				fmt.Printf("  %s✓ %s%s  %s(%s)%s\n", ansiGreen, src, ansiReset, ansiDim, msgs.labelEffective, ansiReset)
 			} else {
-				fmt.Printf("  %s✗ %s%s  %s(%s)%s\n", yellow, src, reset, dim, msgs.labelIgnored, reset)
+				fmt.Printf("  %s✗ %s%s  %s(%s)%s\n", ansiYellow, src, ansiReset, ansiDim, msgs.labelIgnored, ansiReset)
 			}
 		}
 		fmt.Println()
@@ -765,9 +863,7 @@ func execTag(tag string, cmdArgs []string, sshConfigPath string) {
 		os.Exit(1)
 	}
 
-	colors := []string{"\033[32m", "\033[33m", "\033[34m", "\033[35m", "\033[36m"}
-	reset := "\033[0m"
-	bold := "\033[1m"
+	colors := []string{ansiGreen, ansiYellow, "\033[34m", "\033[35m", ansiCyan}
 
 	var wg sync.WaitGroup
 	for i, h := range targets {
@@ -775,7 +871,7 @@ func execTag(tag string, cmdArgs []string, sshConfigPath string) {
 		go func(idx int, host Host) {
 			defer wg.Done()
 			color := colors[idx%len(colors)]
-			prefix := fmt.Sprintf("%s%s[%s]%s ", bold, color, host.Name, reset)
+			prefix := fmt.Sprintf("%s%s[%s]%s ", ansiBold, color, host.Name, ansiReset)
 
 			sshArgs := []string{"-F", sshConfigPath, host.Name}
 			sshArgs = append(sshArgs, cmdArgs...)
@@ -786,7 +882,7 @@ func execTag(tag string, cmdArgs []string, sshConfigPath string) {
 				fmt.Printf("%s%s\n", prefix, line)
 			}
 			if err != nil {
-				fmt.Printf("%s%s%s\n", prefix, msgs.errExecSSH+" "+err.Error(), reset)
+				fmt.Printf("%s%s%s\n", prefix, msgs.errExecSSH+" "+err.Error(), ansiReset)
 			}
 		}(i, h)
 	}
@@ -819,6 +915,28 @@ func runFzf(input string, fzfArgs []string) string {
 		return ""
 	}
 	return strings.TrimSpace(out.String())
+}
+
+// runFzfQuery runs fzf as a text-input dialog using --print-query + --disabled.
+// Returns (query, true) when the user presses Enter to confirm, ("", false) on Esc/abort.
+// --disabled prevents fzf from filtering the dummy item, so Enter always accepts.
+func runFzfQuery(initialQuery string, fzfArgs []string) (string, bool) {
+	args := append([]string{"--query=" + initialQuery}, fzfArgs...)
+	cmd := exec.Command("fzf", args...)
+	// Feed one invisible placeholder so there is always a selectable item.
+	cmd.Stdin = strings.NewReader(" ")
+	cmd.Stderr = os.Stderr
+	var out bytes.Buffer
+	cmd.Stdout = &out
+
+	err := cmd.Run()
+	// --print-query outputs the query on line 1 (line 2 is the selected item, ignored).
+	lines := strings.SplitN(strings.TrimRight(out.String(), "\n"), "\n", 2)
+	query := ""
+	if len(lines) >= 1 {
+		query = strings.TrimSpace(lines[0])
+	}
+	return query, err == nil
 }
 
 func execSSH(host string, args []string) {
@@ -857,6 +975,7 @@ func tempStateFile() string {
 }
 
 // sshConfigView launches a nested fzf showing the full resolved ssh -G output for hostname.
+// Enter opens an inline fzf-based edit dialog for the selected option; after saving the list reloads.
 func sshConfigView(hostname string, sshConfigPath string) error {
 	out, err := exec.Command("ssh", "-F", sshConfigPath, "-G", hostname).Output()
 	if err != nil {
@@ -868,6 +987,12 @@ func sshConfigView(hostname string, sshConfigPath string) error {
 	}
 
 	exPath := selfPath()
+	// Enter: open fzf edit dialog for selected option, then reload ssh -G output.
+	bindEnter := fmt.Sprintf(
+		"enter:execute(%s --edit-host-option %s %s {})+reload(ssh -F %s -G %s 2>/dev/null || echo '')",
+		exPath, hostname, sshConfigPath,
+		sshConfigPath, hostname,
+	)
 	_ = runFzf(lines, []string{
 		"--layout=reverse",
 		"--border=rounded",
@@ -879,6 +1004,7 @@ func sshConfigView(hostname string, sshConfigPath string) error {
 		"--header=" + msgs.configViewHeader(hostname),
 		"--header-first",
 		"--no-sort",
+		"--bind=" + bindEnter,
 	})
 	return nil
 }
@@ -895,25 +1021,19 @@ func printOptionPreview(line string) {
 		value = strings.Join(fields[1:], " ")
 	}
 
-	bold := "\033[1m"
-	reset := "\033[0m"
-	cyan := "\033[36m"
-	yellow := "\033[33m"
-	dim := "\033[2m"
-
-	fmt.Printf("%s  %s%s\n", bold, keyword, reset)
+	fmt.Printf("%s  %s%s\n", ansiBold, keyword, ansiReset)
 	fmt.Println("  " + strings.Repeat("─", 36))
 	if value != "" {
-		fmt.Printf("  %sValue:%s  %s%s%s\n\n", bold, reset, cyan, value, reset)
+		fmt.Printf("  %sValue:%s  %s%s%s\n\n", ansiBold, ansiReset, ansiCyan, value, ansiReset)
 	}
 	desc, known := msgs.optionDescriptions[keyword]
 	if known {
-		fmt.Printf("  %s%s%s\n", bold, msgs.labelDesc, reset)
+		fmt.Printf("  %s%s%s\n", ansiBold, msgs.labelDesc, ansiReset)
 		for _, dline := range wrapText(desc, 60) {
-			fmt.Printf("  %s%s%s\n", yellow, dline, reset)
+			fmt.Printf("  %s%s%s\n", ansiYellow, dline, ansiReset)
 		}
 	} else {
-		fmt.Printf("  %s%s%s\n", dim, msgs.noDescription, reset)
+		fmt.Printf("  %s%s%s\n", ansiDim, msgs.noDescription, ansiReset)
 	}
 }
 
@@ -940,6 +1060,148 @@ func wrapText(s string, maxCols int) []string {
 		lines = append(lines, strings.Join(cur, " "))
 	}
 	return lines
+}
+
+// editHostOption opens a fzf-based modal input dialog to edit one SSH config directive.
+// optionLine is a "keyword value..." string (from ssh -G output / fzf selection).
+// The user edits the value inside a small fzf window; on confirm the file is updated
+// and validated with ssh -G, rolling back on syntax error.
+func editHostOption(hostname, sshConfigPath, optionLine string) error {
+	hosts, err := ParseSSHConfig(sshConfigPath)
+	if err != nil {
+		return fmt.Errorf("parse SSH config: %w", err)
+	}
+	found := findHost(hosts, hostname)
+	if found == nil || found.SourceFile == "" {
+		return fmt.Errorf("%s %s", msgs.errEditNoSource, hostname)
+	}
+
+	fields := strings.Fields(optionLine)
+	if len(fields) == 0 {
+		return fmt.Errorf("empty option line")
+	}
+	keyword := fields[0]
+	currentValue := ""
+	if len(fields) > 1 {
+		currentValue = strings.Join(fields[1:], " ")
+	}
+
+	src := unexpandHome(found.SourceFile, must(os.UserHomeDir()))
+	header := msgs.editModalHeader(hostname, keyword, src, currentValue)
+
+	// Use fzf as a text-input modal: --disabled keeps the dummy item always selected
+	// so Enter exits with code 0, and --print-query returns what the user typed.
+	newValue, confirmed := runFzfQuery(currentValue, []string{
+		"--layout=reverse",
+		"--border=rounded",
+		"--border-label=" + msgs.editModalLabel,
+		"--prompt=" + keyword + ": ",
+		"--header=" + header,
+		"--header-first",
+		"--disabled",
+		"--print-query",
+		"--no-info",
+		"--bind=esc:abort",
+	})
+
+	if !confirmed || newValue == "" || newValue == currentValue {
+		return nil
+	}
+	return applyHostDirective(found.SourceFile, hostname, sshConfigPath, keyword, newValue)
+}
+
+// applyHostDirective writes keyword=newValue into the SSH config file for hostname,
+// validates with ssh -G, and rolls back on syntax error.
+func applyHostDirective(sourceFile, hostname, sshConfigPath, keyword, newValue string) error {
+	original, err := updateHostDirective(sourceFile, hostname, keyword, newValue)
+	if err != nil {
+		return fmt.Errorf("update config: %w", err)
+	}
+
+	if out, chkErr := exec.Command("ssh", "-F", sshConfigPath, "-G", hostname).CombinedOutput(); chkErr != nil {
+		_ = os.WriteFile(sourceFile, original, 0600)
+		return fmt.Errorf("%s\n%s", msgs.editRollback, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// updateHostDirective rewrites filePath in-place, updating or inserting keyword newValue
+// inside the first Host block whose name matches hostname (case-insensitive).
+// Returns the original file contents for rollback purposes.
+func updateHostDirective(filePath, hostname, keyword, newValue string) ([]byte, error) {
+	original, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, err
+	}
+
+	lines := strings.Split(string(original), "\n")
+	// Preserve whether the file ended with a newline.
+	trailingNewline := len(original) > 0 && original[len(original)-1] == '\n'
+
+	var result []string
+	inBlock := false
+	updated := false
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		lower := strings.ToLower(trimmed)
+
+		if inBlock {
+			// End of block: blank line, next Host, or Match
+			if trimmed == "" || strings.HasPrefix(lower, "host ") || strings.HasPrefix(lower, "match ") {
+				if !updated {
+					result = append(result, "  "+keyword+" "+newValue)
+					updated = true
+				}
+				inBlock = false
+				if strings.HasPrefix(lower, "host ") {
+					blockFields := strings.Fields(trimmed)
+					if len(blockFields) >= 2 && strings.EqualFold(blockFields[1], hostname) && !strings.ContainsAny(blockFields[1], "*?") {
+						inBlock = true
+						updated = false
+					}
+				}
+				result = append(result, line)
+				continue
+			}
+			// Check if this line is the directive we want to update.
+			lineFields := strings.Fields(trimmed)
+			if len(lineFields) >= 1 && strings.EqualFold(lineFields[0], keyword) && !updated {
+				// Preserve leading whitespace.
+				leading := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+				result = append(result, leading+keyword+" "+newValue)
+				updated = true
+				continue
+			}
+			result = append(result, line)
+			continue
+		}
+
+		// Outside any block: look for matching Host line.
+		if strings.HasPrefix(lower, "host ") {
+			blockFields := strings.Fields(trimmed)
+			if len(blockFields) >= 2 && strings.EqualFold(blockFields[1], hostname) && !strings.ContainsAny(blockFields[1], "*?") {
+				inBlock = true
+				updated = false
+			}
+		}
+		result = append(result, line)
+	}
+
+	// EOF while still inside the target block.
+	if inBlock && !updated {
+		result = append(result, "  "+keyword+" "+newValue)
+	}
+
+	joined := strings.Join(result, "\n")
+	if trailingNewline && !strings.HasSuffix(joined, "\n") {
+		joined += "\n"
+	}
+
+	if err := os.WriteFile(filePath, []byte(joined), 0600); err != nil {
+		return original, err
+	}
+	return original, nil
 }
 
 func must(s string, err error) string {

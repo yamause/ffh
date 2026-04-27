@@ -25,6 +25,7 @@ type messages struct {
 	errSSHNotFound          string
 	errExecSSH              string
 	errTempFile             string
+	errUnknownFlag          string
 	optionDescriptions      map[string]string
 	// history
 	promptHistory         string
@@ -55,6 +56,11 @@ type messages struct {
 	labelIgnored        string
 	// exec
 	errNoHostsForTag string
+	// edit
+	editModalLabel  string
+	editModalHeader func(hostname, keyword, src, current string) string
+	editRollback    string
+	errEditNoSource string
 }
 
 var msgs messages
@@ -97,18 +103,21 @@ func enMessages() messages {
 			return fmt.Sprintf(`ffh %s — SSH host selector powered by fzf
 
 Usage:
-  ffh [ssh-options]                    interactive host selection from ~/.ssh/config
-  ffh --hosts [path] [ssh-options]     selection from a hosts file
-  ffh --history                        show connection history
+  ffh [ffh-options] [-- ssh-options]   interactive host selection from ~/.ssh/config
+  ffh --hosts [path] [-- ssh-options]  selection from a hosts file
+  ffh --history [-- ssh-options]       show connection history
   ffh --history --delete <host>        delete a history entry
-  ffh --check [sshconfig]              detect duplicate host definitions
+  ffh --check [-F <file>]              detect duplicate host definitions
   ffh --exec <tag> <command...>        run a command on all hosts with the given tag
 
-Options:
+Options (before '--'):
   -h, --help                  show this help
   -v, --version               show version
   -F <file>                   use alternative SSH config file (overrides env/config)
   --tab-source <tag|source>   group tabs by source config file (default) or by Tag
+
+SSH options (after '--'):
+  Any option accepted by ssh(1), e.g. -L, -R, -D, -o, -i ...
 
 SSH config file (priority: -F flag > FFH_SSH_CONFIG env > ssh_config in config > ~/.ssh/config):
   FFH_SSH_CONFIG=/path/to/ssh_config ffh
@@ -120,7 +129,7 @@ Tab source (priority: --tab-source flag > FFH_TAB_SOURCE env > tab_source in con
 
 fzf key bindings:
   Enter          connect to selected host
-  Ctrl-G         show full ssh -G config for focused host
+  Ctrl-G         show full ssh -G config for focused host (Enter to edit)
   Ctrl-Y         copy ssh command to clipboard
   Ctrl-P         check TCP connectivity to focused host
   Ctrl-T         toggle tab grouping between Tag and source file
@@ -138,11 +147,12 @@ Language:
 Examples:
   ffh                              open host selector
   ffh -F ~/work/ssh_config         use alternative SSH config
-  ffh -L 8080:localhost:8080       forward port after selection
+  ffh -- -L 8080:localhost:8080    forward port after selection
   ffh --tab-source source          group tabs by config file instead of Tag
   ffh --hosts                      select from hosts file
   ffh --hosts /etc/hosts           select from specific hosts file
   ffh --history                    show connection history
+  ffh --history -- -v              show history; connect with ssh -v
   ffh --check                      detect duplicate hosts
   ffh --exec web uptime            run uptime on all hosts tagged "web"
 `, ver)
@@ -153,7 +163,7 @@ Examples:
 		labelHostDetails:        " Host Details ",
 		labelOptionDesc:         " Option Description ",
 		configViewHeader: func(hostname string) string {
-			return fmt.Sprintf(" Ctrl-G: SSH config options for %s  (Esc to close) ", hostname)
+			return fmt.Sprintf(" Ctrl-G: SSH config options for %s  Enter: edit  (Esc to close) ", hostname)
 		},
 		portDefault:             "22 (default)",
 		labelDescriptionSection: " Description ",
@@ -166,6 +176,7 @@ Examples:
 		errSSHNotFound:          "ssh not found in PATH",
 		errExecSSH:              "exec ssh:",
 		errTempFile:             "cannot create temp file:",
+		errUnknownFlag:          "unknown flag %q — SSH options must come after '--', e.g.: ffh -- -L 8080:localhost:8080",
 		optionDescriptions:      sshOptionDescriptionsEN,
 		// history
 		promptHistory:         "history> ",
@@ -196,6 +207,13 @@ Examples:
 		labelIgnored:       "ignored",
 		// exec
 		errNoHostsForTag: "no hosts found with tag:",
+		// edit
+		editModalLabel: " Edit directive ",
+		editModalHeader: func(hostname, keyword, src, current string) string {
+			return fmt.Sprintf("Host: %s  |  %s  |  Source: %s\nCurrent: %s\nEnter to save  Esc to cancel", hostname, keyword, src, current)
+		},
+		editRollback:    "Syntax error — rolled back:",
+		errEditNoSource: "no source file tracked for host:",
 	}
 }
 
@@ -205,18 +223,21 @@ func jaMessages() messages {
 			return fmt.Sprintf(`ffh %s — fzf を使った SSH ホスト選択 CLI
 
 使い方:
-  ffh [ssh-オプション]                   ~/.ssh/config からホストを対話的に選択
-  ffh --hosts [パス] [ssh-オプション]    hosts ファイルからホストを対話的に選択
-  ffh --history                          接続履歴を表示
-  ffh --history --delete <ホスト>        履歴エントリを削除
-  ffh --check [sshconfig]               重複ホスト定義を検出
-  ffh --exec <タグ> <コマンド...>        指定タグの全ホストでコマンドを実行
+  ffh [ffh-オプション] [-- ssh-オプション]   ~/.ssh/config からホストを対話的に選択
+  ffh --hosts [パス] [-- ssh-オプション]     hosts ファイルからホストを対話的に選択
+  ffh --history [-- ssh-オプション]          接続履歴を表示
+  ffh --history --delete <ホスト>            履歴エントリを削除
+  ffh --check [-F <ファイル>]               重複ホスト定義を検出
+  ffh --exec <タグ> <コマンド...>            指定タグの全ホストでコマンドを実行
 
-オプション:
+オプション ('--' より前):
   -h, --help                        ヘルプを表示
   -v, --version                     バージョンを表示
   -F <ファイル>                     代替 SSH config ファイルを指定（環境変数・設定ファイルより優先）
   --tab-source <tag|source>         タブをソースファイル（デフォルト）またはタグで分類
+
+SSH オプション ('--' より後):
+  ssh(1) が受け付けるオプションを指定可能。例: -L, -R, -D, -o, -i ...
 
 SSH config ファイルの優先順位 (-F フラグ > FFH_SSH_CONFIG 環境変数 > 設定ファイルの ssh_config > ~/.ssh/config):
   FFH_SSH_CONFIG=/path/to/ssh_config ffh
@@ -228,7 +249,7 @@ SSH config ファイルの優先順位 (-F フラグ > FFH_SSH_CONFIG 環境変�
 
 fzf キーバインド:
   Enter          選択したホストに SSH 接続
-  Ctrl-G         フォーカス中ホストの ssh -G 全設定を表示
+  Ctrl-G         フォーカス中ホストの ssh -G 全設定を表示（Enter で編集）
   Ctrl-Y         ssh コマンドをクリップボードにコピー
   Ctrl-P         フォーカス中ホストの TCP 疎通確認
   Ctrl-T         タブのグループをタグとソースファイルで切り替え
@@ -246,11 +267,12 @@ SSH config ディレクティブ (ffh 独自):
 使用例:
   ffh                                ホスト選択画面を開く
   ffh -F ~/work/ssh_config           代替 SSH config を使用
-  ffh -L 8080:localhost:8080         選択後にポートフォワード
+  ffh -- -L 8080:localhost:8080      選択後にポートフォワード
   ffh --tab-source source            タブをソースファイルで分類
   ffh --hosts                        hosts ファイルから選択
   ffh --hosts /etc/hosts             指定した hosts ファイルから選択
   ffh --history                      接続履歴を表示
+  ffh --history -- -v                履歴から選択して ssh -v で接続
   ffh --check                        重複ホストを検出
   ffh --exec web uptime              "web" タグの全ホストで uptime を実行
 `, ver)
@@ -261,7 +283,7 @@ SSH config ディレクティブ (ffh 独自):
 		labelHostDetails:        " ホスト詳細 ",
 		labelOptionDesc:         " オプション説明 ",
 		configViewHeader: func(hostname string) string {
-			return fmt.Sprintf(" Ctrl-G: %s の SSH 設定オプション  (Esc で閉じる) ", hostname)
+			return fmt.Sprintf(" Ctrl-G: %s の SSH 設定オプション  Enter: 編集  (Esc で閉じる) ", hostname)
 		},
 		portDefault:             "22 (デフォルト)",
 		labelDescriptionSection: " 説明 ",
@@ -274,6 +296,7 @@ SSH config ディレクティブ (ffh 独自):
 		errSSHNotFound:          "ssh が PATH に見つかりません",
 		errExecSSH:              "ssh の実行エラー:",
 		errTempFile:             "一時ファイルの作成に失敗:",
+		errUnknownFlag:          "不明なフラグ %q — SSH オプションは '--' の後に指定してください。例: ffh -- -L 8080:localhost:8080",
 		optionDescriptions:      sshOptionDescriptionsJA,
 		// history
 		promptHistory:         "履歴> ",
@@ -304,5 +327,12 @@ SSH config ディレクティブ (ffh 独自):
 		labelIgnored:       "無視",
 		// exec
 		errNoHostsForTag: "指定タグのホストが見つかりません:",
+		// edit
+		editModalLabel: " ディレクティブ編集 ",
+		editModalHeader: func(hostname, keyword, src, current string) string {
+			return fmt.Sprintf("ホスト: %s  |  %s  |  ソース: %s\n現在の値: %s\nEnter で保存  Esc でキャンセル", hostname, keyword, src, current)
+		},
+		editRollback:    "構文エラー — ロールバックしました:",
+		errEditNoSource: "ホストのソースファイルが不明:",
 	}
 }
