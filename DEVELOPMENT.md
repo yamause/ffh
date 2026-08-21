@@ -11,11 +11,13 @@ ffh（通常起動）
   ├─ タブ状態を一時ファイルに保存
   └─ fzf を起動
          │
-         ├─ preview コールバック: ffh --preview-host <name>
-         ├─ Tab キー: ffh --tab-list <statefile> 1
-         └─ Shift-Tab キー: ffh --tab-list <statefile> -1
-                              ↓
-                         ffh --tab-header <statefile>
+         ├─ preview:      ffh --preview-host <name> <sshconfig>
+         ├─ Tab/Shift-Tab: ffh --tab-list <statefile> ±1 <sshconfig>       (reload、ヘッダーも含めて出力)
+         ├─ Ctrl-T:        ffh --tab-source-toggle <statefile> <sshconfig>  (reload)
+         ├─ Ctrl-G:        ffh --ssh-config-view <name> <sshconfig>        (execute → ネスト fzf)
+         │                    └─ Enter: ffh --edit-host-option <name> <sshconfig> <kw> <val>
+         ├─ Ctrl-Y:        ffh --copy-ssh-cmd <name> <sshconfig>           (execute)
+         └─ Ctrl-P:        ffh --check-host <name> <sshconfig>             (preview)
 ```
 
 fzf の `--preview` / `--bind` に自身のパスを埋め込み、自己呼び出しで各機能を実装しています。
@@ -24,13 +26,18 @@ fzf の `--preview` / `--bind` に自身のパスを埋め込み、自己呼び�
 
 ```
 ffh/
-├── main.go          エントリポイント・fzf 起動・タブ状態管理
+├── main.go          エントリポイント・fzf 起動・タブ状態管理・クリップボード・接続確認・インライン編集
 ├── parser.go        SSH config パーサー
 ├── hosts.go         hosts ファイル読み込み
 ├── config.go        設定解決（設定ファイル・環境変数）
+├── history.go       接続履歴の記録・読み込み（~/.local/share/ffh/history.json）
+├── i18n.go          日英メッセージ・ヘルプテキスト・言語解決
+├── ssh_options.go   ssh -G オプションの日英説明文（Ctrl-G プレビュー用）
+├── editor_test.go   インラインディレクティブ編集のユニットテスト
 ├── parser_test.go   パーサーのユニットテスト
 ├── hosts_test.go    hosts パーサーのユニットテスト
 ├── config_test.go   設定解決のユニットテスト
+├── history_test.go  接続履歴のユニットテスト
 ├── go.mod           モジュール定義（依存なし）
 ├── Makefile         ビルド・インストール
 ├── AGENTS.md        AI エージェント向けハーネス説明
@@ -62,22 +69,35 @@ SSH config の `Host` ブロック 1 件を表します。
 ```
 // ファイルフォーマット（テキスト、改行区切り）
 0          ← 現在のインデックス
+source     ← グループ化方法（"tag" または "source"）
 All        ← tags[0]（常に "All"）
 dev        ← tags[1]
 prod       ← tags[2]
 ```
+
+`Ctrl-T`（`--tab-source-toggle`）でグループ化方法を切り替えると、タグ一覧が再構築されインデックスは 0 に戻ります。
 
 ## コマンドライン引数
 
 | 引数 | 用途 | 呼び出し元 |
 |---|---|---|
 | `（なし）` | SSH モードで起動 | ユーザー |
+| `-F <file>` | 使用する SSH config を指定 | ユーザー |
+| `--tab-source <tag\|source>` | タブのグループ化方法を指定（デフォルト `source`） | ユーザー |
 | `--hosts [path]` | hosts ファイルモード（パス解決は `resolveHostsPath` 参照） | ユーザー |
-| `--preview-host <name>` | プレビューペイン出力 | fzf preview |
-| `--tab-list <statefile> <delta>` | タブ切り替え＋ホスト一覧出力 | fzf reload |
-| `--tab-header <statefile>` | タブヘッダー出力 | fzf transform-header |
-| `--ssh-config-view <hostname>` | `ssh -G` 全オプションをネスト fzf で表示 | fzf execute (Ctrl-G) |
-| `--preview-option <option-line>` | SSH オプションの日本語説明を出力 | ネスト fzf preview |
+| `--history` | 接続履歴から選択 | ユーザー |
+| `--history --delete <host>` | 履歴エントリを削除 | ユーザー |
+| `--check` | 重複ホスト定義を検出 | ユーザー |
+| `--exec <tag> <command...>` | 指定タグの全ホストでコマンドを並列実行 | ユーザー |
+| `--preview-host <name> [<sshconfig>]` | プレビューペイン出力 | fzf preview |
+| `--tab-list <statefile> <delta> [<sshconfig>]` | タブ切り替え＋ヘッダー・ホスト一覧出力 | fzf reload (Tab/Shift-Tab) |
+| `--tab-source-toggle <statefile> [<sshconfig>]` | タブのグループ化（tag/source）切り替え | fzf reload (Ctrl-T) |
+| `--ssh-config-view <hostname> [<sshconfig>]` | `ssh -G` 全オプションをネスト fzf で表示 | fzf execute (Ctrl-G) |
+| `--edit-host-option <host> <sshconfig> <kw> [val]` | ディレクティブのインライン編集ダイアログ | ネスト fzf execute (Ctrl-G 内 Enter) |
+| `--preview-option <option-line>` | SSH オプションの説明を出力 | ネスト fzf preview |
+| `--check-host <name> [<sshconfig>]` | TCP 到達確認（UP/DOWN）を出力 | fzf preview (Ctrl-P) |
+| `--copy-ssh-cmd <name> [<sshconfig>]` | ssh コマンドをクリップボードにコピー | fzf execute (Ctrl-Y) |
+| `--history --list` | 履歴一覧を出力 | fzf reload (Ctrl-D) |
 
 ## SSH config パーサー
 
@@ -145,11 +165,12 @@ sshMode()
 ### fzf バインディング
 
 ```
-Tab       → reload(ffh --tab-list <sf> 1)  + transform-header(ffh --tab-header <sf>)
-Shift-Tab → reload(ffh --tab-list <sf> -1) + transform-header(ffh --tab-header <sf>)
+Tab       → reload(ffh --tab-list <sf> 1 <sshconfig>)
+Shift-Tab → reload(ffh --tab-list <sf> -1 <sshconfig>)
+Ctrl-T    → reload(ffh --tab-source-toggle <sf> <sshconfig>)
 ```
 
-`--tab-list` はインデックスを更新してからホスト一覧を stdout に出力するため、fzf の `reload()` アクションで直接受け取れます。
+`--tab-list` / `--tab-source-toggle` はインデックス（またはグループ化方法）を更新してから、1 行目にヘッダー・2 行目以降にホスト一覧を stdout に出力します。fzf 側は `--header-lines=1` でヘッダー行を切り離して表示するため、`transform-header` は使用していません。
 
 ### `selfPath()` の重要性
 
@@ -194,6 +215,21 @@ fzf・ssh を呼び出すコードはテスト対象外とし、純粋なロジ�
 - 複数ホスト名がある行（最初のみ取得）
 - ファイルが存在しない場合のエラー
 
+**config_test.go**
+
+- SSH config パス・hosts ファイルパス・タブグループ化方法・言語の優先順位解決
+- `~/.config/ffh/config` のパース（コメント・空行のスキップ）
+
+**history_test.go**
+
+- 履歴の記録・更新（同一ホストへの再接続で `ConnCount` が増加）
+- 最終接続時刻順のソート、エントリ削除
+
+**editor_test.go**
+
+- ディレクティブの更新・新規挿入（インデント保持、末尾改行の保持）
+- `ssh -G` による構文チェックとロールバック（`ssh` が PATH にない場合はスキップ）
+
 ### プレビュー出力の確認
 
 ```bash
@@ -202,13 +238,14 @@ fzf・ssh を呼び出すコードはテスト対象外とし、純粋なロジ�
 
 ### タブ状態の確認
 
+`--tab-header` という単独コマンドは存在しません。ヘッダーは `--tab-list` / `--tab-source-toggle` の出力 1 行目に含まれます。
+
 ```bash
 statefile=$(mktemp)
-printf '0\nAll\ndev\nprod\n' > "$statefile"
+printf '0\ntag\nAll\ndev\nprod\n' > "$statefile"
 
-./ffh --tab-header "$statefile"         # ヘッダー表示
-./ffh --tab-list "$statefile" 1         # Tab 1回分の一覧
-./ffh --tab-header "$statefile"         # 更新後ヘッダー確認
+./ffh --tab-list "$statefile" 1 ~/.ssh/config          # Tab 1回分：ヘッダー＋ホスト一覧
+./ffh --tab-source-toggle "$statefile" ~/.ssh/config   # グループ化方法を切り替え
 
 rm "$statefile"
 ```
@@ -227,4 +264,5 @@ rm "$statefile"
 ## 注意点
 
 - `Tag` ディレクティブは OpenSSH の公式仕様です（`ssh_config(5)` 参照）。本来は `Match Tag` ディレクティブで設定ブロックを選択するために使われますが、ffh ではホストの分類・絞り込みにも活用しています
-- fzf 0.44 未満では `transform-header` アクションが利用できないため、タブ切り替え時にヘッダーが更新されない場合があります
+- タブのグループ化方法は `--tab-source` / `FFH_TAB_SOURCE` / 設定ファイルの `tab_source` で指定でき、デフォルトはソースファイル単位（`source`）です。`Ctrl-T` で `tag` / `source` を対話的に切り替えられます
+- ディレクティブのインライン編集（Ctrl-G → Enter）は変更後に `ssh -G` で構文検証し、失敗時は元の内容にロールバックします
