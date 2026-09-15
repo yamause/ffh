@@ -17,6 +17,7 @@ A CLI tool that parses `~/.ssh/config` and lets you interactively select an SSH 
 - Copy the resolved `ssh` command to the clipboard, check TCP reachability, and view/edit `ssh -G` output inline
 - Hosts file mode (path configurable via CLI, environment variable, or config file)
 - UI language switchable between English and Japanese
+- Automatic password entry via 1Password (`op` CLI) integration (enabled only when `op_vault` is set)
 
 ## Installation
 
@@ -204,8 +205,22 @@ The default is Japanese if the system `LANG` starts with `ja`, otherwise English
 hosts_file = /path/to/hosts
 ssh_config = /path/to/ssh_config
 tab_source = tag
+tag_delimiter = /
 language = ja
+op_vault = Private
 ```
+
+### Automatic password entry via 1Password
+
+When `op_vault` is set, ffh fetches the password from 1Password (`op` CLI) via `SSH_ASKPASS` and enters it automatically for hosts that need password authentication (requires an active `op` sign-in session).
+
+The 1Password item name is not registered per host — it's simply the **effective `User` resolved via `ssh -G <host>`**. If several hosts log in as the same user, you only need one item in 1Password.
+
+- Item name = effective `User` (e.g. hosts that log in as `pocuser` use the 1Password item named `pocuser`, reading its `password` field)
+- The rare exception — same username, different password — can be overridden per host with `SetEnv FFH_CREDENTIAL=<item name>` (see next section)
+- If that item also has a `username` field set, it takes priority over ssh_config's own `User` (passed as `-l`). This only matters for hosts that already override the item via `SetEnv FFH_CREDENTIAL` for a shared login; an explicit `-l`/`-o User=` on the command line always wins over the 1Password value
+- If no matching 1Password item exists for the resolved user, ffh does nothing and falls back to ssh's normal interactive password prompt and ssh_config's own `User` (key-only hosts are unaffected)
+- `op_vault` can be overridden with the `FFH_OP_VAULT` environment variable
 
 ---
 
@@ -220,6 +235,25 @@ Host myserver
 ```
 
 Hosts sharing the same `Tag` value are grouped under that tab (when tab grouping is switched to `Tag` mode via `Ctrl-T`).
+
+#### `tag_delimiter` — splitting one Tag into multiple tabs
+
+```ssh-config
+Host myserver
+    HostName 10.0.0.1
+    Tag /hoge/fuga/
+```
+
+A host's `Tag` value is split on `/` by default, and each resulting piece becomes its own tab. In the example above, `myserver` shows up under both the `hoge` tab and the `fuga` tab. Empty pieces from a leading/trailing delimiter are dropped, so `/hoge/fuga/` becomes `["hoge", "fuga"]`, not `["", "hoge", "fuga", ""]`. A plain `Tag` without the delimiter (e.g. `prod`) still becomes a single tab, same as before.
+
+```ini
+# ~/.config/ffh/config
+tag_delimiter = ,
+```
+
+- Default is `/`; change it with `tag_delimiter` (config file) or `FFH_TAG_DELIMITER` (env var)
+- To disable splitting entirely and always use the whole `Tag` value as one tab, set `tag_delimiter = off` / `FFH_TAG_DELIMITER=off`
+- `ffh --exec <tag> <command>` uses the same splitting logic for its tag match, so `ffh --exec hoge <cmd>` also matches a host with `Tag /hoge/fuga/`
 
 ### Description — host description
 
@@ -243,6 +277,36 @@ Host myserver
 
 - The `# Description:` line is the marker. All `#` comment lines that follow it become the description body.
 - A blank line between `# Description:` and the `Host` line causes the description to be ignored.
+
+### SetEnv FFH_CREDENTIAL — overriding the 1Password item name
+
+```ssh-config
+Host poc-str1_agg1_dc4
+    HostName 192.168.255.240
+    User root
+    SetEnv FFH_CREDENTIAL=root-str1agg
+```
+
+When `op_vault` is set, the 1Password item name defaults to the effective `User`, but if the same username actually has different passwords on different hosts, override it per host with `SetEnv FFH_CREDENTIAL=<item name>`. `SetEnv` is a native SSH directive (OpenSSH 7.8+), so it doesn't cause syntax errors under `ssh -G` and can also be placed inside a `Match` block covering several hosts at once.
+
+#### ⚠️ Careful with a catch-all block like `Match all`
+
+If you use an unconditional default block such as `Match all` to set `User`/`IdentityFile`/etc. for every host, putting `SetEnv FFH_CREDENTIAL=<item name>` there means **key-only hosts inherit it too**. ssh_config uses the first value it finds for a given keyword, so unless a more specific `Host` block already sets its own `SetEnv FFH_CREDENTIAL`, that host ends up pointed at the same 1Password item.
+
+This is especially risky for hosts whose private key has a passphrase: `SSH_ASKPASS_REQUIRE=force` also intercepts the key-passphrase prompt, so the unrelated 1Password value gets fed in and breaks key auth. If public-key auth fails for any other reason, ssh falls through to password auth and auto-submits the wrong password — risking a lockout on devices with a lockout policy.
+
+The recommended fix is to scope `SetEnv FFH_CREDENTIAL=<item name>` to a `Match` block covering only the hosts that actually need it, rather than a global default. If you can't remove it from a shared default block for other reasons, disable it per host with `off` (next section).
+
+### SetEnv FFH_CREDENTIAL=off / empty value — disabling per host
+
+```ssh-config
+Host keyonly-host
+    HostName 192.168.10.5
+    User devuser
+    SetEnv FFH_CREDENTIAL=off
+```
+
+Setting `FFH_CREDENTIAL` to the reserved value `off` (case-insensitive), or to an empty value (`SetEnv FFH_CREDENTIAL=`), makes that host skip 1Password integration entirely and fall back to normal key auth / an interactive password prompt. Both behave identically — `off` reads clearly, an empty value is the quicker option if you're just deleting an existing item name. Either way, the disabling `Host` block must be resolved *before* a catch-all default like `Match all` in the file (ssh_config's "first value wins" rule), otherwise the catch-all's value still wins.
 
 ### Full config example
 

@@ -55,6 +55,7 @@ ffh --history --list                                 print history lines; called
 | `history.go` | Connection history persisted to `~/.local/share/ffh/history.json` |
 | `i18n.go` | English/Japanese message tables and help text; language resolution |
 | `ssh_options.go` | Localized descriptions for `ssh -G` output, shown in the Ctrl-G nested preview |
+| `credential.go` | 1Password (`op` CLI) credential resolution and `SSH_ASKPASS` self-invocation |
 
 ## Testing
 
@@ -67,11 +68,23 @@ Unit tests cover:
   case-insensitive keywords, back-to-back Host blocks, no-trailing-newline files,
   multi-hostname `Host` lines, duplicate host names (first-match-wins)
 - hosts.go: Loopback filtering, multi-name lines, comment/blank skipping
-- config.go: SSH config / hosts file / tab-source / language resolution priority
+- config.go: SSH config / hosts file / tab-source / tag-delimiter / language
+  resolution priority
 - history.go: record/find/delete/sort of history entries
 - main.go (editor_test.go): inline directive edit + rollback on `ssh -G` syntax error
+- main.go (main_test.go): `hasLoginOverride` detection of an explicit `-l`/`-o User=`
+  in the caller's ssh-args; `tagSegments`/`buildTabState`/`filterHosts` behavior with
+  and without a configured `tag_delimiter`
+- credential.go: `ssh -G` output parsing (SetEnv override vs. resolved-user fallback,
+  the `off`/empty-value disable sentinel including precedence over a catch-all
+  `Match all` block), `op_vault` resolution priority, and `op`/`ssh`-dependent paths
+  (skipped if the respective binary is not in PATH). The username-override path itself (a 1Password
+  item's `username` field differing from ssh_config's `User`) isn't covered by an
+  automated test — it needs a live signed-in `op` session against a real fixture
+  item, same limitation as the existing password-fetch tests.
 
-Tests do NOT require fzf; a few editor tests skip themselves if `ssh` is not in PATH.
+Tests do NOT require fzf; a few editor and credential tests skip themselves if
+`ssh` or `op` is not in PATH.
 
 ## SSH Config Parsing Notes
 
@@ -87,3 +100,57 @@ Tests do NOT require fzf; a few editor tests skip themselves if `ssh` is not in 
 - First occurrence wins for duplicate host names across included files
 - Default tab grouping is by source config file (`--tab-source source`); pass
   `--tab-source tag` / `FFH_TAB_SOURCE=tag` / `tab_source = tag` to group by `Tag` instead
+- In `Tag` grouping mode, a single `Tag` value is split into multiple tab keys via
+  `tagSegments` (main.go), using `/` as the delimiter by default: a host tagged
+  `/hoge/fuga/` appears under both the `hoge` and `fuga` tabs. Override the delimiter
+  with `tag_delimiter` (config file) / `FFH_TAG_DELIMITER` (env var), or set either to
+  `off` (case-insensitive, normalized in `normalizeTagDelimiter`) to disable splitting
+  and use each `Tag` value whole, as before this feature existed. `buildTabState` and
+  `filterHosts` both take an explicit `tagDelimiter` argument rather than resolving it
+  internally, to keep them pure/unit-testable; callers fetch it once via
+  `resolveTagDelimiter()` (config.go). `execTag` (the `--exec <tag>` backend) uses the
+  same `tagSegments` matching for consistency with tab filtering.
+
+## Credential (1Password) Integration
+
+- Disabled by default; enabled by setting `op_vault` (config file `op_vault = <vault>`
+  or `FFH_OP_VAULT` env var). No behavior change when unset.
+- The 1Password item name is the effective `User`, resolved via a single `ssh -F
+  <config> -G <host>` call (parser.go's `Host.User` is not used here since it is
+  usually empty — `User` is normally set via `Match Tagged` in the main config,
+  and the parser skips `Match` blocks entirely).
+- A `SetEnv FFH_CREDENTIAL=<item>` directive on the `Host` (or a covering `Match`)
+  overrides the item name — the one supported way to special-case a host without a
+  custom ssh_config keyword (unknown keywords make `ssh -G` fail outright).
+- `SetEnv FFH_CREDENTIAL=off` (case-insensitive) or an empty value
+  (`SetEnv FFH_CREDENTIAL=`, also valid ssh_config syntax) is a reserved sentinel
+  that opts a host out of credential resolution entirely — `parseCredentialItem`
+  treats either as an unresolvable item, so `resolveCredential` returns nil exactly
+  as it would for "no matching 1Password item". Needed because a catch-all
+  `Match all` default block (commonly used to set `User`/`IdentityFile`/etc. for
+  every host) can also set `FFH_CREDENTIAL` for every host, including key-only ones.
+  Since ssh_config keeps the first-obtained value per key, the opt-out only wins
+  when it's resolved before the catch-all — i.e. the host-specific `Host` block with
+  `SetEnv FFH_CREDENTIAL=off` (or `=`) must appear earlier in the config (or its
+  Includes) than the `Match all` block. Prefer scoping `FFH_CREDENTIAL=<item>` to
+  only the hosts that actually need it (a dedicated `Match Tag <x>` block, not a
+  global default) over relying on the disable sentinel as a per-host patch — it's
+  the safety net, not the primary defense.
+- `resolveCredential` (credential.go) validates the password field is fetchable
+  *before* touching the environment; on any failure (no matching item, `op` not
+  signed in, etc.) it returns nil and `execSSH` silently proceeds with ssh's normal
+  interactive prompt and ssh_config's own `User` — never breaks a key-only connection.
+- If the resolved item also has a non-empty `username` field, `execSSH` passes it as
+  `-l <username>` on the real ssh invocation, which outranks ssh_config's `User`
+  directive. This only matters for hosts using the `SetEnv FFH_CREDENTIAL` override
+  above (the default item-name-equals-`User` resolution would just fetch the same
+  value back). An explicit `-l`/`-o User=` already present in the caller's own
+  ssh-args (`hasLoginOverride` in main.go) always wins over the 1Password value.
+- When enabled, `execSSH` sets `SSH_ASKPASS_REQUIRE=force` and points `SSH_ASKPASS`
+  at ffh's own executable (`selfPath()`). `main()` checks `FFH_ASKPASS_MODE=1` before
+  any other dispatch and, if set, runs as the askpass helper instead of the normal
+  fzf UI (see `runAskpass` in credential.go). Vault/item are passed via
+  `FFH_OP_VAULT`/`FFH_OP_ITEM` env vars, not CLI args, since `SSH_ASKPASS` only
+  supports a bare executable path. The `username` field, unlike `password`, isn't a
+  secret in this flow — it's read directly in `resolveCredential` and passed as a
+  plain CLI argument rather than through the askpass indirection.

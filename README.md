@@ -17,6 +17,7 @@ SSH config をパースして、fzf でホストを対話的に選択する CLI 
 - ssh コマンドのクリップボードへのコピー、TCP 到達確認、`ssh -G` 出力の閲覧とインライン編集
 - hosts ファイルモード（パスは環境変数・設定ファイル・CLI で指定可能）
 - UI 言語は日本語・英語を切り替え可能
+- 1Password（`op` CLI）と連携したパスワード自動入力（`op_vault` 設定時のみ有効）
 
 ## インストール
 
@@ -202,8 +203,22 @@ hosts ファイルを読み込み、fzf でホストを選択して SSH 接続�
 hosts_file = /path/to/hosts
 ssh_config = /path/to/ssh_config
 tab_source = tag
+tag_delimiter = /
 language = ja
+op_vault = Private
 ```
+
+### 1Password連携によるパスワード自動入力
+
+`op_vault` を設定すると、パスワード認証が必要なホストへの接続時に `SSH_ASKPASS` 経由で1Password (`op` CLI) からパスワードを取得し自動入力します(`op` にサインイン済みであることが必要)。
+
+1Passwordのアイテム名は、ホストごとに登録するのではなく **`ssh -G <host>` で解決される実効ユーザー名** をそのまま使います。同じユーザーでログインするホストが複数あっても、1Passwordには1つのアイテムを作るだけで済みます。
+
+- アイテム名 = 実効 `User`(例: `pocuser` ユーザーでログインするホストは、1Passwordの `pocuser` という名前のアイテムの `password` フィールドを使う)
+- 同じユーザー名でもパスワードが異なる例外ケースは、該当ホストに `SetEnv FFH_CREDENTIAL=<item名>` を書いて明示的に上書きできる(次節参照)
+- そのアイテムに `username` フィールドが設定されている場合、`ssh_config` 側の `User` より優先してそのユーザー名で接続する(`-l` オプションで上書き)。共有ログイン用に `SetEnv FFH_CREDENTIAL` でアイテムを明示指定しているホストでのみ意味を持つ挙動で、コマンドラインで明示的に `-l` / `-o User=` を指定した場合はそちらが優先される
+- 該当ユーザーの1Passwordアイテムが見つからない場合は何もせず、通常の対話的なパスワード入力とssh_configの`User`にフォールバックする(鍵認証のみのホストに影響はない)
+- `FFH_OP_VAULT` 環境変数で `op_vault` を上書きできる
 
 ---
 
@@ -218,6 +233,25 @@ Host myserver
 ```
 
 複数ホストに同じ `Tag` を付けると、そのタグのタブでまとめて表示されます（`Ctrl-T` で Tag グループ表示に切り替えたとき）。
+
+#### `tag_delimiter` — 1つの Tag を複数タブに分割
+
+```ssh-config
+Host myserver
+    HostName 10.0.0.1
+    Tag /hoge/fuga/
+```
+
+`Tag` の値はデフォルトで `/` を区切り文字として分割され、分割後の各要素がタブとして扱われます。上記の例では `myserver` は `hoge` タブと `fuga` タブの両方に表示されます。先頭・末尾のデリミタによる空要素は無視されるので `/hoge/fuga/` は `["hoge", "fuga"]` になります(`["", "hoge", "fuga", ""]` にはなりません)。区切り文字を含まない通常の `Tag`(例: `prod`)は今まで通り単一のタブになります。
+
+```ini
+# ~/.config/ffh/config
+tag_delimiter = ,
+```
+
+- デフォルトは `/`。別の文字にしたい場合は `tag_delimiter`(設定ファイル)または `FFH_TAG_DELIMITER`(環境変数)で変更できる
+- 分割を無効化して `Tag` の値を常に単一のタブとして扱いたい場合は `tag_delimiter = off` / `FFH_TAG_DELIMITER=off` を指定する
+- `ffh --exec <tag> <command>` でのタグ一致判定にも同じ分割ロジックが使われるので、`ffh --exec hoge <cmd>` は `Tag /hoge/fuga/` のホストにもマッチします
 
 ### Description — 説明文
 
@@ -241,6 +275,36 @@ Host myserver
 
 - `# Description:` 行がマーカーです。それ以降の `#` コメント行が説明文の本文になります
 - `# Description:` と `Host` の間に空行を入れると Description は取得されません
+
+### SetEnv FFH_CREDENTIAL — 1Passwordアイテム名の上書き
+
+```ssh-config
+Host poc-str1_agg1_dc4
+    HostName 192.168.255.240
+    User root
+    SetEnv FFH_CREDENTIAL=root-str1agg
+```
+
+`op_vault` が設定されている場合、1Passwordのアイテム名はデフォルトで実効 `User` 名になりますが、同じユーザー名でもホストによってパスワードが異なる場合は `SetEnv FFH_CREDENTIAL=<item名>` でホスト単位に上書きできます。`SetEnv` はネイティブな SSH ディレクティブ(OpenSSH 7.8+)なので、`ssh -G` でも構文エラーにならず、複数ホストをまとめる `Match` ブロックにも書けます。
+
+#### ⚠️ `Match all` のような全ホスト共通ブロックに書く場合の注意
+
+`User`/`IdentityFile` などをまとめて設定する目的で `Match all` のような無条件マッチのデフォルトブロックを使っている場合、そこに `SetEnv FFH_CREDENTIAL=<item名>` を書くと **公開鍵認証のみのホストにも同じ設定が継承されます**。ssh_config は同じキーワードについて最初に見つかった値を使うため、より具体的な `Host` ブロックで既に `SetEnv FFH_CREDENTIAL` を設定していない限り、そのホストも同じ1Passwordアイテムを参照してしまいます。
+
+これは特にパスフレーズ付きの秘密鍵を使うホストで問題になります。`SSH_ASKPASS_REQUIRE=force` は鍵のパスフレーズ入力も横取りするため、無関係な1Passwordアイテムの値が渡り鍵認証が失敗する可能性があります。また公開鍵認証が何らかの理由で失敗した場合、無関係なパスワードが自動送信され、ロックアウトポリシーのある機器では意図せずロックされるリスクもあります。
+
+対策として、`SetEnv FFH_CREDENTIAL=<item名>` は本来対象のホスト/タグだけを絞った `Match` ブロックに書くことを推奨します。それでも共通デフォルトブロックから外せない事情がある場合は、次節の `off` で個別に無効化してください。
+
+### SetEnv FFH_CREDENTIAL=off / 空値 — ホスト単位での無効化
+
+```ssh-config
+Host keyonly-host
+    HostName 192.168.10.5
+    User devuser
+    SetEnv FFH_CREDENTIAL=off
+```
+
+`FFH_CREDENTIAL` に予約語 `off`(大文字小文字を区別しない)、または空値(`SetEnv FFH_CREDENTIAL=`)を指定すると、そのホストは1Password連携を完全にスキップし、通常の鍵認証/対話的パスワード入力にフォールバックします。どちらも動作は同じで、`off` は意図が読み取りやすく、空値は既存の値を削除するだけで無効化できる手軽さがあります。この無効化は該当ホストの `Host` ブロックが `Match all` などの共通デフォルトブロックより**ファイル内で先に**解決される必要があります(ssh_configの「最初に見つかった値が有効」というルールに従うため)。
 
 ### 設定例
 
