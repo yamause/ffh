@@ -8,7 +8,8 @@ A CLI tool that parses `~/.ssh/config` and lets you interactively select an SSH 
 
 - Recursively resolves `Include` directives in `~/.ssh/config`
 - **Left preview pane** showing host details while browsing
-- Tab filtering grouped by **source config file** (default) or by the **`Tag` directive** — toggle with `Ctrl-T`
+- Tab filtering grouped by **source config file** (default) or by the **`Tag` directive** — toggle with `Ctrl-T`, fuzzy-jump to a tab by name with `Ctrl-/`
+- Short persistent hint below the tab bar, plus a `?` overlay listing every key binding
 - Multi-line host descriptions via `# Description:` comments
 - Multiple hostnames on a single `Host` line are expanded into separate entries
 - Connection history with quick reconnect (`--history`)
@@ -78,10 +79,14 @@ ffh -- -v                       # verbose/debug output
 | `Ctrl-Y` | Copy the `ssh` command for the focused host to the clipboard |
 | `Ctrl-P` | Show a TCP reachability check for the focused host in the preview pane |
 | `Ctrl-T` | Toggle tab grouping between `Tag` and source config file |
+| `Ctrl-/` | Fuzzy-search tab names and jump straight to one |
+| `?` | Show the full key-binding list as an overlay |
 | `Tab` | Move to next tab |
 | `Shift-Tab` | Move to previous tab |
 | `Esc` / `Ctrl-C` | Cancel |
 | Text input | Fuzzy search |
+
+A short hint (`Ctrl-/:jump tab  ?:help`) stays visible right below the tab bar. Press `?` to open a full key-binding overlay (`Esc` or `Enter` to close). The persistent hint is kept intentionally short so it doesn't visually blend into the tab bar right above it.
 
 ### Tab filtering
 
@@ -89,12 +94,13 @@ Tabs are grouped by **the source config file each host came from** by default. P
 
 ```
   [ All ]  [ dev ]  [ prod ]
+  Ctrl-/:jump tab  ?:help
 ```
 
 - **All** — show every host (default)
 - **tag name / source file** — show only hosts belonging to that group, depending on the active grouping mode
 
-Switch tabs with `Tab` / `Shift-Tab`.
+Switch tabs one at a time with `Tab` / `Shift-Tab`. When there are many tabs, press `Ctrl-/` to open a fuzzy-searchable list of tab names (k9s-style command bar) and jump straight to the one you want.
 
 ### Preview pane
 

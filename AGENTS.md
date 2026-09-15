@@ -39,6 +39,8 @@ ffh --preview-option <option-line>                   print localized description
 ffh --edit-host-option <host> <sshconfig> <kw> [val] open inline edit dialog for one directive; called by Enter inside Ctrl-G view
 ffh --tab-list <statefile> <delta> [<sshconfig>]     advance tab index and print header+hosts; called by Tab/Shift-Tab reload
 ffh --tab-source-toggle <statefile> [<sshconfig>]    toggle tab grouping (tag/source) and print header+hosts; called by Ctrl-T reload
+ffh --tab-jump <statefile>                           open nested fzf to fuzzy-select a tab by name and set it current; called by Ctrl-/ execute (paired with a --tab-list delta=0 reload)
+ffh --show-help                                      open nested fzf listing every sshMode key binding; called by "?" execute
 ffh --check-host <name> [<sshconfig>]                print TCP UP/DOWN status; called by Ctrl-P preview
 ffh --copy-ssh-cmd <name> [<sshconfig>]              copy resolved ssh command to clipboard; called by Ctrl-Y execute
 ffh --history --list                                 print history lines; called by Ctrl-D reload in history mode
@@ -74,7 +76,10 @@ Unit tests cover:
 - main.go (editor_test.go): inline directive edit + rollback on `ssh -G` syntax error
 - main.go (main_test.go): `hasLoginOverride` detection of an explicit `-l`/`-o User=`
   in the caller's ssh-args; `tagSegments`/`buildTabState`/`filterHosts` behavior with
-  and without a configured `tag_delimiter`
+  and without a configured `tag_delimiter`; `tabIndexByLabel` matching in both "tag"
+  and "source" grouping modes; `renderHeader` always emitting the tab-bar line plus
+  the key-hints line (2 lines total); `formatHelpLines` column-alignment to the
+  longest `Key` string
 - credential.go: `ssh -G` output parsing (SetEnv override vs. resolved-user fallback,
   the `off`/empty-value disable sentinel including precedence over a catch-all
   `Match all` block), `op_vault` resolution priority, and `op`/`ssh`-dependent paths
@@ -110,6 +115,31 @@ Tests do NOT require fzf; a few editor and credential tests skip themselves if
   internally, to keep them pure/unit-testable; callers fetch it once via
   `resolveTagDelimiter()` (config.go). `execTag` (the `--exec <tag>` backend) uses the
   same `tagSegments` matching for consistency with tab filtering.
+- `renderHeader` (main.go) always emits two lines: the tab bar, then a dim, always-
+  visible key hint line (`renderKeyHints`, sourced from `msgs.keyHintsSSH`).
+  `sshMode`'s fzf invocation therefore uses `--header-lines=2`, and every reload path
+  that re-prints `renderHeader`'s output (`tabList`, `tabSourceToggle`) must keep
+  emitting both lines or the outer fzf's header parsing gets out of sync.
+  `keyHintsSSH` is intentionally just `Ctrl-/:jump tab  ?:help` — a full inline list
+  of every binding was tried first but visually blended into the tab bar right above
+  it (dim-on-dim, no separation); the full list moved to the `?` overlay instead
+  (`showHelp`) so the persistent line stays short and legible.
+- `Ctrl-/` is bound to a k9s-style "jump to tab by name" command: it `execute()`s
+  `ffh --tab-jump <statefile>` (a nested fzf over the current tab labels, matched back
+  to an index via `tabIndexByLabel`), then chains `+reload(--tab-list ... 0 ...)` to
+  re-render at the newly-selected index. A literal `:` could not be used as the key
+  (fzf's own `--bind` syntax uses `:` as the KEY:ACTION separator, so a bare `:` key
+  spec is rejected with "key name required" — verified empirically against fzf 0.44.1);
+  `ctrl-/` was chosen as an unused, conventionally "search/command"-associated key
+  instead, since any plain printable character would also collide with the main fzf's
+  fuzzy-search query input.
+- `?` opens `showHelp` (main.go): a nested fzf listing every `sshMode` key binding
+  from `msgs.helpKeyBindings` ( `[]keyBinding{Key, Action}` ), column-aligned by
+  `formatHelpLines` to the width of the longest `Key` string so the layout stays
+  correct across languages regardless of translated string length. Unlike other
+  printable-character concerns, `?` is bound directly (not via a Ctrl-combo) since
+  reserving `?` for help is a strong, near-universal convention (vim, less, k9s) and
+  host names essentially never contain a literal `?`.
 
 ## Credential (1Password) Integration
 
