@@ -66,7 +66,7 @@ func main() {
 	}
 
 	// Internal command used by fzf reload bindings: --tab-list <statefile> <delta> [<sshconfig>]
-	// Outputs header as line 1, then filtered host list. Used with --header-lines=1.
+	// Outputs header as lines 1-2, then filtered host list. Used with --header-lines=2.
 	if len(args) >= 3 && args[0] == "--tab-list" {
 		var configArg string
 		if len(args) >= 4 {
@@ -84,6 +84,21 @@ func main() {
 			configArg = args[2]
 		}
 		tabSourceToggle(args[1], resolveSSHConfigPath(configArg))
+		return
+	}
+
+	// Internal command used by Ctrl-/ execute binding: --tab-jump <statefile>
+	// Opens a nested fzf to fuzzy-select a tab by name and sets it as current;
+	// the outer fzf's paired reload(--tab-list ... 0 ...) then re-renders on top of it.
+	if len(args) >= 2 && args[0] == "--tab-jump" {
+		tabJump(args[1])
+		return
+	}
+
+	// Internal command used by "?" execute binding: --show-help
+	// Opens a nested fzf listing every key binding available in sshMode.
+	if len(args) >= 1 && args[0] == "--show-help" {
+		showHelp()
 		return
 	}
 
@@ -388,7 +403,7 @@ func renderHeader(s tabState) string {
 			}
 			sb.WriteString(p.text)
 		}
-		return sb.String() + "\n"
+		return sb.String() + "\n" + renderKeyHints() + "\n"
 	}
 
 	// Sliding window: expand outward from the selected tab until we run out of space.
@@ -459,7 +474,14 @@ func renderHeader(s tabState) string {
 		sb.WriteString(" ")
 		sb.WriteString(arrowR)
 	}
-	return sb.String() + "\n"
+	return sb.String() + "\n" + renderKeyHints() + "\n"
+}
+
+// renderKeyHints returns a single dim, always-visible line summarizing the fzf key
+// bindings available in sshMode, so the operations don't need to be memorized from
+// the README (k9s-style persistent hint bar).
+func renderKeyHints() string {
+	return "  " + ansiDim + msgs.keyHintsSSH + ansiReset
 }
 
 func filterHosts(hosts []Host, source string, key string, tagDelimiter string) []string {
@@ -486,7 +508,7 @@ func filterHosts(hosts []Host, source string, key string, tagDelimiter string) [
 }
 
 // tabList is called by fzf reload bindings. It advances the tab index by delta,
-// then outputs: line 1 = header (consumed by --header-lines=1), remaining lines = host names.
+// then outputs: lines 1-2 = header (consumed by --header-lines=2), remaining lines = host names.
 func tabList(statefile string, delta int, sshConfigPath string) {
 	s := loadTabState(statefile)
 	if len(s.tags) == 0 {
@@ -497,7 +519,7 @@ func tabList(statefile string, delta int, sshConfigPath string) {
 
 	hosts := loadHosts(sshConfigPath)
 	names := filterHosts(hosts, s.source, s.currentTag(), resolveTagDelimiter())
-	// Header on line 1 (consumed by --header-lines=1), hosts follow.
+	// Header on lines 1-2 (consumed by --header-lines=2), hosts follow.
 	fmt.Print(renderHeader(s))
 	fmt.Print(strings.Join(names, "\n"))
 }
@@ -518,6 +540,79 @@ func tabSourceToggle(statefile string, sshConfigPath string) {
 	names := filterHosts(hosts, s.source, "", tagDelimiter)
 	fmt.Print(renderHeader(s))
 	fmt.Print(strings.Join(names, "\n"))
+}
+
+// tabJump is called by fzf Ctrl-/ binding. It opens a nested fzf listing every tab
+// name (fuzzy-searchable, k9s command-bar style) and, on selection, sets that tab as
+// current in statefile. Does not itself print anything -- the outer bind chains this
+// with reload(--tab-list ... 0 ...) to re-render once the new index is saved.
+func tabJump(statefile string) {
+	s := loadTabState(statefile)
+	if len(s.tags) == 0 {
+		return
+	}
+	labels := make([]string, len(s.tags))
+	for i, t := range s.tags {
+		labels[i] = tabDisplayName(t, s.source)
+	}
+	selected := runFzf(strings.Join(labels, "\n"), []string{
+		"--layout=reverse",
+		"--border=rounded",
+		"--prompt=" + msgs.promptTabJump,
+		"--header=" + msgs.tabJumpHeader,
+		"--header-first",
+	})
+	if selected == "" {
+		return
+	}
+	if idx := tabIndexByLabel(s, selected); idx >= 0 {
+		s.idx = idx
+		s.save(statefile)
+	}
+}
+
+// tabIndexByLabel returns the index in s.tags whose display label matches label, or -1.
+func tabIndexByLabel(s tabState, label string) int {
+	for i, t := range s.tags {
+		if tabDisplayName(t, s.source) == label {
+			return i
+		}
+	}
+	return -1
+}
+
+// formatHelpLines aligns key bindings into a "key  action" table, padding every key
+// to the width of the longest one so the action column lines up regardless of how
+// long each translated key/action string is.
+func formatHelpLines(bindings []keyBinding) []string {
+	maxKeyLen := 0
+	for _, kb := range bindings {
+		if len(kb.Key) > maxKeyLen {
+			maxKeyLen = len(kb.Key)
+		}
+	}
+	lines := make([]string, len(bindings))
+	for i, kb := range bindings {
+		lines[i] = fmt.Sprintf("%-*s  %s", maxKeyLen, kb.Key, kb.Action)
+	}
+	return lines
+}
+
+// showHelp is called by fzf's "?" binding. It opens a nested fzf listing every key
+// binding available in sshMode; purely informational, so both Enter and Esc just
+// close it without taking any action.
+func showHelp() {
+	lines := formatHelpLines(msgs.helpKeyBindings)
+	runFzf(strings.Join(lines, "\n"), []string{
+		"--layout=reverse",
+		"--border=rounded",
+		"--border-label=" + msgs.helpModalLabel,
+		"--header=" + msgs.helpModalHeader,
+		"--header-first",
+		"--no-info",
+		"--bind=enter:abort",
+		"--bind=esc:abort",
+	})
 }
 
 func loadHosts(sshConfigPath string) []Host {
@@ -542,7 +637,7 @@ func sshMode(args []string, sshConfigPath string, tabSource string) {
 	names := filterHosts(hosts, tabSource, "", tagDelimiter) // All
 	exPath := selfPath()
 
-	// Initial input: header on line 1 (consumed by --header-lines=1), hosts follow.
+	// Initial input: header on lines 1-2 (consumed by --header-lines=2), hosts follow.
 	initialInput := renderHeader(s) + strings.Join(names, "\n")
 
 	// Tab = next tag, Shift-Tab = prev tag.
@@ -556,6 +651,12 @@ func sshMode(args []string, sshConfigPath string, tabSource string) {
 	bindCheck := fmt.Sprintf("ctrl-p:preview(%s --check-host {} %s)", exPath, sshConfigPath)
 	// Ctrl-T toggles tab source between tag and source file grouping.
 	bindToggleSource := fmt.Sprintf("ctrl-t:reload(%s --tab-source-toggle %s %s)", exPath, statefile, sshConfigPath)
+	// Ctrl-/ opens a nested fzf to fuzzy-jump straight to a tab by name (k9s-style
+	// command bar); tabJump saves the new index, then this reload() re-renders on it.
+	bindTabJump := fmt.Sprintf("ctrl-/:execute(%s --tab-jump %s)+reload(%s --tab-list %s 0 %s)", exPath, statefile, exPath, statefile, sshConfigPath)
+	// ? opens a nested fzf showing the full key-binding list (help overlay), since the
+	// persistent header line only has room for a short hint.
+	bindHelp := fmt.Sprintf("?:execute(%s --show-help)", exPath)
 
 	selected := runFzf(
 		initialInput,
@@ -567,7 +668,7 @@ func sshMode(args []string, sshConfigPath string, tabSource string) {
 			"--preview-window=left:40%:wrap",
 			"--preview-label=" + msgs.labelHostDetails,
 			"--ansi",
-			"--header-lines=1",
+			"--header-lines=2",
 			"--header-first",
 			"--bind=" + bindNext,
 			"--bind=" + bindPrev,
@@ -575,6 +676,8 @@ func sshMode(args []string, sshConfigPath string, tabSource string) {
 			"--bind=" + bindCopy,
 			"--bind=" + bindCheck,
 			"--bind=" + bindToggleSource,
+			"--bind=" + bindTabJump,
+			"--bind=" + bindHelp,
 		},
 	)
 	if selected == "" {

@@ -6,11 +6,23 @@ import (
 	"strings"
 )
 
+// keyBinding is one row of the "?" help overlay: a key spec paired with its action.
+type keyBinding struct {
+	Key    string
+	Action string
+}
+
 type messages struct {
 	helpText                func(ver string) string
 	tabAll                  string
 	promptSSH               string
 	promptHosts             string
+	promptTabJump           string
+	tabJumpHeader           string
+	keyHintsSSH             string
+	helpKeyBindings         []keyBinding
+	helpModalLabel          string
+	helpModalHeader         string
 	labelHostDetails        string
 	labelOptionDesc         string
 	configViewHeader        func(hostname string) string
@@ -39,21 +51,21 @@ type messages struct {
 	colLastUsed           string
 	colCount              string
 	// time ago
-	agoJustNow  string
-	agoMinutes  string
-	agoHours    string
-	agoDays     string
+	agoJustNow string
+	agoMinutes string
+	agoHours   string
+	agoDays    string
 	// clipboard
 	errClipboard string
 	msgCopied    string
 	// check
-	statusUp            string
-	statusDown          string
-	errHostNotFound     string
-	msgNoDuplicates     string
-	msgDuplicatesFound  string
-	labelEffective      string
-	labelIgnored        string
+	statusUp           string
+	statusDown         string
+	errHostNotFound    string
+	msgNoDuplicates    string
+	msgDuplicatesFound string
+	labelEffective     string
+	labelIgnored       string
 	// exec
 	errNoHostsForTag string
 	// edit
@@ -133,6 +145,7 @@ fzf key bindings:
   Ctrl-Y         copy ssh command to clipboard
   Ctrl-P         check TCP connectivity to focused host
   Ctrl-T         toggle tab grouping between Tag and source file
+  Ctrl-/         jump to a tab by name (fuzzy search)
   Tab            next tab
   Shift-Tab      previous tab
   Esc / Ctrl-C   cancel
@@ -157,11 +170,26 @@ Examples:
   ffh --exec web uptime            run uptime on all hosts tagged "web"
 `, ver)
 		},
-		tabAll:                  "All",
-		promptSSH:               "ssh> ",
-		promptHosts:             "hosts> ",
-		labelHostDetails:        " Host Details ",
-		labelOptionDesc:         " Option Description ",
+		tabAll:        "All",
+		promptSSH:     "ssh> ",
+		promptHosts:   "hosts> ",
+		promptTabJump: "tab> ",
+		tabJumpHeader: " Ctrl-/: jump to tab  Enter: select  (Esc to cancel) ",
+		keyHintsSSH:   "Ctrl-/:jump tab  ?:help",
+		helpKeyBindings: []keyBinding{
+			{"Enter", "connect"},
+			{"Ctrl-G", "show ssh -G config"},
+			{"Ctrl-Y", "copy ssh command"},
+			{"Ctrl-P", "check TCP connectivity"},
+			{"Ctrl-T", "toggle tab grouping"},
+			{"Ctrl-/", "jump to a tab by name"},
+			{"Tab/Shift-Tab", "cycle tabs"},
+			{"Esc/Ctrl-C", "cancel"},
+		},
+		helpModalLabel:   " Key Bindings ",
+		helpModalHeader:  " (Esc or Enter to close) ",
+		labelHostDetails: " Host Details ",
+		labelOptionDesc:  " Option Description ",
 		configViewHeader: func(hostname string) string {
 			return fmt.Sprintf(" Ctrl-G: SSH config options for %s  Enter: edit  (Esc to close) ", hostname)
 		},
@@ -180,7 +208,7 @@ Examples:
 		optionDescriptions:      sshOptionDescriptionsEN,
 		// history
 		promptHistory:         "history> ",
-		historyHeader:         " Enter: connect  Ctrl-D: delete entry ",
+		historyHeader:         " Enter: connect  Ctrl-D: delete  Ctrl-G: config  Ctrl-Y: copy  Ctrl-P: check ",
 		labelLastUsed:         "Last Used",
 		labelHistoryConnected: "connected",
 		msgHistoryEmpty:       "No connection history.",
@@ -253,6 +281,7 @@ fzf キーバインド:
   Ctrl-Y         ssh コマンドをクリップボードにコピー
   Ctrl-P         フォーカス中ホストの TCP 疎通確認
   Ctrl-T         タブのグループをタグとソースファイルで切り替え
+  Ctrl-/         タブ名で絞り込んでジャンプ（あいまい検索）
   Tab            次のタブへ移動
   Shift-Tab      前のタブへ移動
   Esc / Ctrl-C   キャンセル
@@ -277,11 +306,26 @@ SSH config ディレクティブ (ffh 独自):
   ffh --exec web uptime              "web" タグの全ホストで uptime を実行
 `, ver)
 		},
-		tabAll:                  "すべて",
-		promptSSH:               "ssh> ",
-		promptHosts:             "hosts> ",
-		labelHostDetails:        " ホスト詳細 ",
-		labelOptionDesc:         " オプション説明 ",
+		tabAll:        "すべて",
+		promptSSH:     "ssh> ",
+		promptHosts:   "hosts> ",
+		promptTabJump: "tab> ",
+		tabJumpHeader: " Ctrl-/: タブへジャンプ  Enter: 選択  (Esc でキャンセル) ",
+		keyHintsSSH:   "Ctrl-/:タブ検索  ?:ヘルプ",
+		helpKeyBindings: []keyBinding{
+			{"Enter", "接続"},
+			{"Ctrl-G", "ssh -G 設定を表示"},
+			{"Ctrl-Y", "ssh コマンドをコピー"},
+			{"Ctrl-P", "TCP 疎通確認"},
+			{"Ctrl-T", "タブのグループ切替"},
+			{"Ctrl-/", "タブ名で検索してジャンプ"},
+			{"Tab/Shift-Tab", "タブ移動"},
+			{"Esc/Ctrl-C", "キャンセル"},
+		},
+		helpModalLabel:   " キーバインド ",
+		helpModalHeader:  " (Esc または Enter で閉じる) ",
+		labelHostDetails: " ホスト詳細 ",
+		labelOptionDesc:  " オプション説明 ",
 		configViewHeader: func(hostname string) string {
 			return fmt.Sprintf(" Ctrl-G: %s の SSH 設定オプション  Enter: 編集  (Esc で閉じる) ", hostname)
 		},
@@ -300,7 +344,7 @@ SSH config ディレクティブ (ffh 独自):
 		optionDescriptions:      sshOptionDescriptionsJA,
 		// history
 		promptHistory:         "履歴> ",
-		historyHeader:         " Enter: 接続  Ctrl-D: 履歴削除 ",
+		historyHeader:         " Enter: 接続  Ctrl-D: 削除  Ctrl-G: 設定表示  Ctrl-Y: コピー  Ctrl-P: 疎通確認 ",
 		labelLastUsed:         "最終接続",
 		labelHistoryConnected: "回接続",
 		msgHistoryEmpty:       "接続履歴がありません。",
