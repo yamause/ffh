@@ -144,6 +144,15 @@ func resolveTabSource(cliArg string) string {
 	return "source"
 }
 
+// resolveOpVault determines the 1Password vault used for credential lookups.
+// Priority: FFH_OP_VAULT env var > op_vault in config file > "" (feature disabled).
+func resolveOpVault() string {
+	if v := os.Getenv("FFH_OP_VAULT"); v != "" {
+		return v
+	}
+	return loadConfig()["op_vault"]
+}
+
 func normalizeTabSource(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
 	if s == "source" {

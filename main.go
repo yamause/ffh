@@ -30,6 +30,16 @@ const (
 )
 
 func main() {
+	// Re-invocation as an SSH_ASKPASS helper (see credentialEnv). Checked before
+	// anything else since ssh calls this with no other flags, just a prompt argument.
+	if os.Getenv("FFH_ASKPASS_MODE") == "1" {
+		if err := runAskpass(); err != nil {
+			fmt.Fprintln(os.Stderr, "ffh askpass:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	initMessages()
 	args := os.Args[1:]
 
@@ -945,11 +955,42 @@ func execSSH(host string, args []string) {
 		fmt.Fprintln(os.Stderr, msgs.errSSHNotFound)
 		os.Exit(1)
 	}
-	sshArgs := append([]string{"ssh", host}, args...)
-	if err := syscall.Exec(sshPath, sshArgs, os.Environ()); err != nil {
+	cred := resolveCredential(extractSSHConfigFlagValue(args), host)
+
+	sshArgs := []string{"ssh"}
+	if cred != nil && cred.username != "" && !hasLoginOverride(args) {
+		// -l on the command line outranks ssh_config's own User directive, so this
+		// only takes effect for hosts without an explicit -l/-o User= from the caller.
+		sshArgs = append(sshArgs, "-l", cred.username)
+	}
+	sshArgs = append(sshArgs, host)
+	sshArgs = append(sshArgs, args...)
+
+	env := os.Environ()
+	if cred != nil {
+		env = append(env, cred.env...)
+	}
+	if err := syscall.Exec(sshPath, sshArgs, env); err != nil {
 		fmt.Fprintln(os.Stderr, msgs.errExecSSH, err)
 		os.Exit(1)
 	}
+}
+
+// hasLoginOverride reports whether args already specifies a login user via
+// "-l <user>"/"-l<user>" or "-o User=<user>", so an explicit request from the caller
+// always wins over a 1Password-derived username.
+func hasLoginOverride(args []string) bool {
+	for i, a := range args {
+		switch {
+		case a == "-l":
+			return true
+		case strings.HasPrefix(a, "-l") && a != "-l":
+			return true
+		case a == "-o" && i+1 < len(args) && strings.HasPrefix(strings.ToLower(args[i+1]), "user="):
+			return true
+		}
+	}
+	return false
 }
 
 func selfPath() string {
