@@ -246,19 +246,46 @@ func (s tabState) currentTag() string {
 	return s.tags[s.idx]
 }
 
-func buildTabState(hosts []Host, source string) tabState {
+// tagSegments splits tag into the tab keys it should appear under. If delimiter is
+// empty (feature disabled) or tag doesn't contain it, tag is returned as its own sole
+// segment. Empty segments produced by leading/trailing delimiters are dropped, so
+// "/hoge/fuga/" with delimiter "/" yields ["hoge", "fuga"], not ["", "hoge", "fuga", ""].
+func tagSegments(tag, delimiter string) []string {
+	if tag == "" {
+		return nil
+	}
+	if delimiter == "" {
+		return []string{tag}
+	}
+	var segments []string
+	for _, part := range strings.Split(tag, delimiter) {
+		if part != "" {
+			segments = append(segments, part)
+		}
+	}
+	if len(segments) == 0 {
+		return []string{tag}
+	}
+	return segments
+}
+
+func buildTabState(hosts []Host, source string, tagDelimiter string) tabState {
 	seen := make(map[string]bool)
 	var items []string
 	for _, h := range hosts {
-		var key string
+		var keys []string
 		if source == "source" {
-			key = h.SourceFile
+			if h.SourceFile != "" {
+				keys = []string{h.SourceFile}
+			}
 		} else {
-			key = h.Tag
+			keys = tagSegments(h.Tag, tagDelimiter)
 		}
-		if key != "" && !seen[key] {
-			seen[key] = true
-			items = append(items, key)
+		for _, key := range keys {
+			if !seen[key] {
+				seen[key] = true
+				items = append(items, key)
+			}
 		}
 	}
 	sort.Strings(items)
@@ -435,7 +462,7 @@ func renderHeader(s tabState) string {
 	return sb.String() + "\n"
 }
 
-func filterHosts(hosts []Host, source string, key string) []string {
+func filterHosts(hosts []Host, source string, key string, tagDelimiter string) []string {
 	var names []string
 	for _, h := range hosts {
 		if key == "" {
@@ -446,9 +473,12 @@ func filterHosts(hosts []Host, source string, key string) []string {
 			if h.SourceFile == key {
 				names = append(names, h.Name)
 			}
-		} else {
-			if h.Tag == key {
+			continue
+		}
+		for _, seg := range tagSegments(h.Tag, tagDelimiter) {
+			if seg == key {
 				names = append(names, h.Name)
+				break
 			}
 		}
 	}
@@ -466,7 +496,7 @@ func tabList(statefile string, delta int, sshConfigPath string) {
 	s.save(statefile)
 
 	hosts := loadHosts(sshConfigPath)
-	names := filterHosts(hosts, s.source, s.currentTag())
+	names := filterHosts(hosts, s.source, s.currentTag(), resolveTagDelimiter())
 	// Header on line 1 (consumed by --header-lines=1), hosts follow.
 	fmt.Print(renderHeader(s))
 	fmt.Print(strings.Join(names, "\n"))
@@ -482,9 +512,10 @@ func tabSourceToggle(statefile string, sshConfigPath string) {
 		s.source = "source"
 	}
 	hosts := loadHosts(sshConfigPath)
-	s = buildTabState(hosts, s.source)
+	tagDelimiter := resolveTagDelimiter()
+	s = buildTabState(hosts, s.source, tagDelimiter)
 	s.save(statefile)
-	names := filterHosts(hosts, s.source, "")
+	names := filterHosts(hosts, s.source, "", tagDelimiter)
 	fmt.Print(renderHeader(s))
 	fmt.Print(strings.Join(names, "\n"))
 }
@@ -500,14 +531,15 @@ func loadHosts(sshConfigPath string) []Host {
 
 func sshMode(args []string, sshConfigPath string, tabSource string) {
 	hosts := loadHosts(sshConfigPath)
+	tagDelimiter := resolveTagDelimiter()
 
 	// Build and persist initial tab state
 	statefile := tempStateFile()
-	s := buildTabState(hosts, tabSource)
+	s := buildTabState(hosts, tabSource, tagDelimiter)
 	s.save(statefile)
 	defer os.Remove(statefile)
 
-	names := filterHosts(hosts, tabSource, "") // All
+	names := filterHosts(hosts, tabSource, "", tagDelimiter) // All
 	exPath := selfPath()
 
 	// Initial input: header on line 1 (consumed by --header-lines=1), hosts follow.
@@ -856,10 +888,14 @@ func checkDuplicates(sshConfigPath string) {
 // execTag runs a command on all hosts with the given tag, sequentially.
 func execTag(tag string, cmdArgs []string, sshConfigPath string) {
 	hosts := loadHosts(sshConfigPath)
+	tagDelimiter := resolveTagDelimiter()
 	var targets []Host
 	for _, h := range hosts {
-		if h.Tag == tag {
-			targets = append(targets, h)
+		for _, seg := range tagSegments(h.Tag, tagDelimiter) {
+			if seg == tag {
+				targets = append(targets, h)
+				break
+			}
 		}
 	}
 	if len(targets) == 0 {

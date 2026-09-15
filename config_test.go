@@ -62,6 +62,82 @@ func TestResolveHostsPath_Default(t *testing.T) {
 	}
 }
 
+func TestResolveTagDelimiter_DefaultsToSlash(t *testing.T) {
+	t.Cleanup(resetConfigCache)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("FFH_TAG_DELIMITER", "")
+	resetConfigCache()
+	if v := resolveTagDelimiter(); v != "/" {
+		t.Errorf("got %q, want %q (default)", v, "/")
+	}
+}
+
+func TestResolveTagDelimiter_EnvVarWins(t *testing.T) {
+	t.Cleanup(resetConfigCache)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("FFH_TAG_DELIMITER", ",")
+	resetConfigCache()
+	if v := resolveTagDelimiter(); v != "," {
+		t.Errorf("got %q, want %q", v, ",")
+	}
+}
+
+func TestResolveTagDelimiter_EnvVarOffDisables(t *testing.T) {
+	t.Cleanup(resetConfigCache)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("FFH_TAG_DELIMITER", "OFF")
+	resetConfigCache()
+	if v := resolveTagDelimiter(); v != "" {
+		t.Errorf("got %q, want empty (disabled via off)", v)
+	}
+}
+
+func TestResolveTagDelimiter_ConfigFileWins(t *testing.T) {
+	t.Cleanup(resetConfigCache)
+	t.Setenv("FFH_TAG_DELIMITER", "")
+
+	dir := t.TempDir()
+	cfgDir := filepath.Join(dir, ".config", "ffh")
+	if err := os.MkdirAll(cfgDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "config"), []byte("tag_delimiter = ,\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	orig, _ := os.UserHomeDir()
+	t.Setenv("HOME", dir)
+	defer t.Setenv("HOME", orig)
+	resetConfigCache()
+
+	if v := resolveTagDelimiter(); v != "," {
+		t.Errorf("got %q, want %q", v, ",")
+	}
+}
+
+func TestResolveTagDelimiter_ConfigFileOffDisables(t *testing.T) {
+	t.Cleanup(resetConfigCache)
+	t.Setenv("FFH_TAG_DELIMITER", "")
+
+	dir := t.TempDir()
+	cfgDir := filepath.Join(dir, ".config", "ffh")
+	if err := os.MkdirAll(cfgDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "config"), []byte("tag_delimiter = off\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	orig, _ := os.UserHomeDir()
+	t.Setenv("HOME", dir)
+	defer t.Setenv("HOME", orig)
+	resetConfigCache()
+
+	if v := resolveTagDelimiter(); v != "" {
+		t.Errorf("got %q, want empty (disabled via off)", v)
+	}
+}
+
 func TestSplitAtDoubleDash(t *testing.T) {
 	cases := []struct {
 		args        []string

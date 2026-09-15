@@ -153,6 +153,29 @@ func resolveOpVault() string {
 	return loadConfig()["op_vault"]
 }
 
+// resolveTagDelimiter determines the delimiter used to split a host's Tag value into
+// multiple tab keys (e.g. Tag "/hoge/fuga/" with the default "/" delimiter produces
+// tabs "hoge" and "fuga", and the host is listed under both).
+// Priority: FFH_TAG_DELIMITER env var > tag_delimiter in config file > "/" (default).
+// Either source can be set to "off" (case-insensitive) to disable splitting and use
+// each Tag value as a single, whole tab key instead.
+func resolveTagDelimiter() string {
+	if v := os.Getenv("FFH_TAG_DELIMITER"); v != "" {
+		return normalizeTagDelimiter(v)
+	}
+	if v := loadConfig()["tag_delimiter"]; v != "" {
+		return normalizeTagDelimiter(v)
+	}
+	return "/"
+}
+
+func normalizeTagDelimiter(v string) string {
+	if strings.EqualFold(v, "off") {
+		return ""
+	}
+	return v
+}
+
 func normalizeTabSource(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
 	if s == "source" {
