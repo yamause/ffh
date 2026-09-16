@@ -255,8 +255,14 @@ func expandHome(path, home string) string {
 }
 
 func unexpandHome(path, home string) string {
-	if strings.HasPrefix(path, home) {
-		return "~" + path[len(home):]
+	if home == "" {
+		return path
+	}
+	if path == home {
+		return "~"
+	}
+	if rest, ok := strings.CutPrefix(path, home+"/"); ok {
+		return "~/" + rest
 	}
 	return path
 }

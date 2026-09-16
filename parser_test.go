@@ -321,3 +321,31 @@ func TestParseFile_MixedWildcardAndValidNames(t *testing.T) {
 		t.Errorf("expected only db-1, got %v", hosts)
 	}
 }
+
+func TestUnexpandHome_ShortensPathUnderHome(t *testing.T) {
+	if got := unexpandHome("/home/bob/.ssh/id_rsa", "/home/bob"); got != "~/.ssh/id_rsa" {
+		t.Errorf("got %q, want %q", got, "~/.ssh/id_rsa")
+	}
+}
+
+func TestUnexpandHome_ExactHomeMatch(t *testing.T) {
+	if got := unexpandHome("/home/bob", "/home/bob"); got != "~" {
+		t.Errorf("got %q, want %q", got, "~")
+	}
+}
+
+func TestUnexpandHome_DoesNotShortenUnrelatedSiblingPath(t *testing.T) {
+	// "/home/bob2" merely starts with "/home/bob" but isn't under it -- a bare
+	// strings.HasPrefix check would wrongly shorten this to "~2/.ssh/id_rsa".
+	path := "/home/bob2/.ssh/id_rsa"
+	if got := unexpandHome(path, "/home/bob"); got != path {
+		t.Errorf("got %q, want unchanged %q", got, path)
+	}
+}
+
+func TestUnexpandHome_EmptyHomeIsNoop(t *testing.T) {
+	path := "/home/bob/.ssh/id_rsa"
+	if got := unexpandHome(path, ""); got != path {
+		t.Errorf("got %q, want unchanged %q", got, path)
+	}
+}
