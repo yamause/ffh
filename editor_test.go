@@ -154,6 +154,52 @@ Host realhost
 	}
 }
 
+func TestUpdateHostDirective_MultiHostnameLine_SecondName(t *testing.T) {
+	content := `Host web1 web2
+  User alice
+
+Host other
+  HostName other.example.com
+`
+	path := writeTemp(t, content)
+	// "web2" is the second name on a shared "Host web1 web2" line -- parser.go's
+	// parseFile expands this into two separate Host entries (Name="web1" and
+	// Name="web2") sharing the same block, so editing "web2" must still find it.
+	if _, err := updateHostDirective(path, "web2", "User", "bob"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := readFile(t, path)
+	want := `Host web1 web2
+  User bob
+
+Host other
+  HostName other.example.com
+`
+	if got != want {
+		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestUpdateHostDirective_MultiHostnameLine_WildcardFirst(t *testing.T) {
+	content := `Host web* db-1
+  User alice
+`
+	path := writeTemp(t, content)
+	// "db-1" is the only non-wildcard name on "Host web* db-1"; parser.go resolves
+	// this block's Host.Name to "db-1" (the wildcard token is skipped entirely), so
+	// editing "db-1" must match this block even though it's not the first token.
+	if _, err := updateHostDirective(path, "db-1", "User", "bob"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := readFile(t, path)
+	want := `Host web* db-1
+  User bob
+`
+	if got != want {
+		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
 func TestUpdateHostDirective_PreservesLeadingWhitespace(t *testing.T) {
 	content := "Host myhost\n\tUser alice\n"
 	path := writeTemp(t, content)

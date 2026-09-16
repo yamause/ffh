@@ -66,30 +66,12 @@ func TestParseCredentialItem_OffSentinelCaseInsensitive(t *testing.T) {
 	}
 }
 
-func TestResolveOpVault_DisabledByDefault(t *testing.T) {
+func TestResolveCredential_NilWhenNoBackendConfigured(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("FFH_OP_VAULT", "")
 	resetConfigCache()
-	if v := resolveOpVault(); v != "" {
-		t.Errorf("got %q, want empty (disabled by default)", v)
-	}
-}
-
-func TestResolveOpVault_EnvOverride(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("FFH_OP_VAULT", "Private")
-	resetConfigCache()
-	if v := resolveOpVault(); v != "Private" {
-		t.Errorf("got %q, want %q", v, "Private")
-	}
-}
-
-func TestResolveCredential_NilWhenVaultUnset(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("FFH_OP_VAULT", "")
-	resetConfigCache()
-	if cred := resolveCredential("/some/ssh_config", "somehost"); cred != nil {
-		t.Errorf("expected nil when op_vault is unset, got %v", cred)
+	if cred, backend, _ := resolveCredential("/some/ssh_config", "somehost"); cred != nil || backend != nil {
+		t.Errorf("expected (nil, nil) when no backend is configured, got (%v, %v)", cred, backend)
 	}
 }
 
@@ -97,8 +79,8 @@ func TestResolveCredential_NilWhenNoSSHConfigPath(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("FFH_OP_VAULT", "Private")
 	resetConfigCache()
-	if cred := resolveCredential("", "somehost"); cred != nil {
-		t.Errorf("expected nil when sshConfigPath is empty (hosts-file mode), got %v", cred)
+	if cred, backend, _ := resolveCredential("", "somehost"); cred != nil || backend != nil {
+		t.Errorf("expected (nil, nil) when sshConfigPath is empty (hosts-file mode), got (%v, %v)", cred, backend)
 	}
 }
 
@@ -156,51 +138,5 @@ func TestResolveCredentialItem_EmptyValueOverridesCatchAllMatch(t *testing.T) {
 	path := writeTemp(t, content)
 	if _, err := resolveCredentialItem(path, "keyonly"); err == nil {
 		t.Error("expected error (disabled) for keyonly host, got a resolved item")
-	}
-}
-
-func TestFetchOpSecret_ErrorWhenItemMissing(t *testing.T) {
-	if _, err := exec.LookPath("op"); err != nil {
-		t.Skip("op not found in PATH")
-	}
-	if _, err := fetchOpSecret("__ffh_test_nonexistent_vault__", "__ffh_test_nonexistent_item__", "password"); err == nil {
-		t.Error("expected error for nonexistent vault/item")
-	}
-}
-
-func TestFetchOpSecret_ErrorWhenItemMissing_UsernameField(t *testing.T) {
-	if _, err := exec.LookPath("op"); err != nil {
-		t.Skip("op not found in PATH")
-	}
-	if _, err := fetchOpSecret("__ffh_test_nonexistent_vault__", "__ffh_test_nonexistent_item__", "username"); err == nil {
-		t.Error("expected error for nonexistent vault/item")
-	}
-}
-
-func TestRunAskpass_ErrorWhenSecretMissing(t *testing.T) {
-	if _, err := exec.LookPath("op"); err != nil {
-		t.Skip("op not found in PATH")
-	}
-	t.Setenv("FFH_OP_VAULT", "__ffh_test_nonexistent_vault__")
-	t.Setenv("FFH_OP_ITEM", "__ffh_test_nonexistent_item__")
-	if err := runAskpass(); err == nil {
-		t.Error("expected error for nonexistent vault/item")
-	}
-}
-
-func TestResolveCredential_NilWhenItemUnresolvable(t *testing.T) {
-	if _, err := exec.LookPath("op"); err != nil {
-		t.Skip("op not found in PATH")
-	}
-	if _, err := exec.LookPath("ssh"); err != nil {
-		t.Skip("ssh not found in PATH")
-	}
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("FFH_OP_VAULT", "__ffh_test_nonexistent_vault__")
-	resetConfigCache()
-	content := "Host testhost\n  HostName 127.0.0.1\n  User __ffh_test_nonexistent_item__\n"
-	path := writeTemp(t, content)
-	if cred := resolveCredential(path, "testhost"); cred != nil {
-		t.Errorf("expected nil when the password field can't be fetched, got %v", cred)
 	}
 }

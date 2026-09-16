@@ -130,7 +130,7 @@ func resolveHostsPath(cliArg string) string {
 }
 
 // resolveTabSource determines how tabs are grouped ("tag" or "source").
-// Priority: --tab-source CLI arg > FFH_TAB_SOURCE env var > tab_source in config file > "tag"
+// Priority: --tab-source CLI arg > FFH_TAB_SOURCE env var > tab_source in config file > "source"
 func resolveTabSource(cliArg string) string {
 	if cliArg != "" {
 		return normalizeTabSource(cliArg)
@@ -193,5 +193,3 @@ func extractTabSourceFlagValue(args []string) string {
 	}
 	return ""
 }
-
-

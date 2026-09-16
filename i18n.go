@@ -28,7 +28,6 @@ type messages struct {
 	configViewHeader        func(hostname string) string
 	portDefault             string
 	labelDescriptionSection string
-	labelValue              string
 	labelDesc               string
 	noDescription           string
 	msgConnectTo            string
@@ -39,6 +38,10 @@ type messages struct {
 	errTempFile             string
 	errUnknownFlag          string
 	optionDescriptions      map[string]string
+	// credential (password manager backends)
+	warnCredNotSignedIn func(backend string) string
+	promptCredSignin    func(backend string) string
+	errCredSignin       string
 	// history
 	promptHistory         string
 	historyHeader         string
@@ -47,9 +50,6 @@ type messages struct {
 	msgHistoryEmpty       string
 	msgHistoryDeleted     string
 	errHistoryNotFound    string
-	colHost               string
-	colLastUsed           string
-	colCount              string
 	// time ago
 	agoJustNow string
 	agoMinutes string
@@ -75,6 +75,11 @@ type messages struct {
 	errEditNoSource string
 }
 
+// msgs is a package-global set by initMessages() at startup and reassigned by
+// individual tests (via initMessages()/t.Setenv("FFH_LANG", ...)) to exercise both
+// locales. It is not safe for concurrent access -- no test in this codebase uses
+// t.Parallel(), and adding it anywhere that reads msgs (directly or via a function
+// under test) would race with any other test still reassigning it.
 var msgs messages
 
 func initMessages() {
@@ -195,7 +200,6 @@ Examples:
 		},
 		portDefault:             "22 (default)",
 		labelDescriptionSection: " Description ",
-		labelValue:              "Value:",
 		labelDesc:               "Description:",
 		noDescription:           "(no description)",
 		msgConnectTo:            "Connect to",
@@ -206,6 +210,14 @@ Examples:
 		errTempFile:             "cannot create temp file:",
 		errUnknownFlag:          "unknown flag %q — SSH options must come after '--', e.g.: ffh -- -L 8080:localhost:8080",
 		optionDescriptions:      sshOptionDescriptionsEN,
+		// credential (password manager backends)
+		warnCredNotSignedIn: func(backend string) string {
+			return fmt.Sprintf("%s is not signed in — sign in and try again.", backend)
+		},
+		promptCredSignin: func(backend string) string {
+			return fmt.Sprintf("Authenticate with %s now and retry? [y/N]: ", backend)
+		},
+		errCredSignin: "sign-in failed:",
 		// history
 		promptHistory:         "history> ",
 		historyHeader:         " Enter: connect  Ctrl-D: delete  Ctrl-G: config  Ctrl-Y: copy  Ctrl-P: check ",
@@ -214,9 +226,6 @@ Examples:
 		msgHistoryEmpty:       "No connection history.",
 		msgHistoryDeleted:     "Deleted history entry for",
 		errHistoryNotFound:    "No history entry found for",
-		colHost:               "Host",
-		colLastUsed:           "Last Used",
-		colCount:              "Count",
 		// time ago
 		agoJustNow: "just now",
 		agoMinutes: "m ago",
@@ -331,7 +340,6 @@ SSH config ディレクティブ (ffh 独自):
 		},
 		portDefault:             "22 (デフォルト)",
 		labelDescriptionSection: " 説明 ",
-		labelValue:              "値:",
 		labelDesc:               "説明:",
 		noDescription:           "(説明なし)",
 		msgConnectTo:            "接続先:",
@@ -342,6 +350,14 @@ SSH config ディレクティブ (ffh 独自):
 		errTempFile:             "一時ファイルの作成に失敗:",
 		errUnknownFlag:          "不明なフラグ %q — SSH オプションは '--' の後に指定してください。例: ffh -- -L 8080:localhost:8080",
 		optionDescriptions:      sshOptionDescriptionsJA,
+		// credential (password manager backends)
+		warnCredNotSignedIn: func(backend string) string {
+			return fmt.Sprintf("%s にサインインしていません。認証してから再度お試しください。", backend)
+		},
+		promptCredSignin: func(backend string) string {
+			return fmt.Sprintf("今すぐ%sで認証して再試行しますか？ [y/N]: ", backend)
+		},
+		errCredSignin: "認証に失敗しました:",
 		// history
 		promptHistory:         "履歴> ",
 		historyHeader:         " Enter: 接続  Ctrl-D: 削除  Ctrl-G: 設定表示  Ctrl-Y: コピー  Ctrl-P: 疎通確認 ",
@@ -350,9 +366,6 @@ SSH config ディレクティブ (ffh 独自):
 		msgHistoryEmpty:       "接続履歴がありません。",
 		msgHistoryDeleted:     "履歴を削除しました:",
 		errHistoryNotFound:    "履歴が見つかりません:",
-		colHost:               "ホスト",
-		colLastUsed:           "最終接続",
-		colCount:              "回数",
 		// time ago
 		agoJustNow: "たった今",
 		agoMinutes: "分前",

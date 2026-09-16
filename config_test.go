@@ -140,9 +140,9 @@ func TestResolveTagDelimiter_ConfigFileOffDisables(t *testing.T) {
 
 func TestSplitAtDoubleDash(t *testing.T) {
 	cases := []struct {
-		args        []string
-		wantFFH     []string
-		wantSSH     []string
+		args    []string
+		wantFFH []string
+		wantSSH []string
 	}{
 		{[]string{"-F", "cfg", "--", "-L", "8080:localhost:8080"}, []string{"-F", "cfg"}, []string{"-L", "8080:localhost:8080"}},
 		{[]string{"-F", "cfg"}, []string{"-F", "cfg"}, nil},
