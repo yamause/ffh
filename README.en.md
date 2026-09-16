@@ -161,7 +161,7 @@ Scans all `Include`d config files for `Host` names defined more than once, and s
 ffh --exec web uptime
 ```
 
-Runs the same command over SSH on every host with the given `Tag`, in parallel, prefixing each line of output with the host name.
+Runs the same command over SSH on every host with the given `Tag`, in parallel, prefixing each line of output with the host name. If `op_vault` is set, per-host password-manager integration applies here too, but since multiple hosts connect concurrently, the "not signed in" confirmation prompt is never shown — an affected host just falls back to ssh's normal interactive password prompt.
 
 ### Hosts file mode
 
@@ -218,7 +218,7 @@ op_vault = Private
 
 ### Automatic password entry via 1Password
 
-When `op_vault` is set, ffh fetches the password from 1Password (`op` CLI) via `SSH_ASKPASS` and enters it automatically for hosts that need password authentication (requires an active `op` sign-in session).
+When `op_vault` is set, ffh fetches the password from 1Password (`op` CLI) via `SSH_ASKPASS` and enters it automatically for hosts that need password authentication (requires an active `op` sign-in session). 1Password is the only password manager supported today, but internally this isn't hardwired to 1Password specifically — the implementation is structured so other password managers (e.g. Bitwarden) can be added later (see "Credential Integration" in `AGENTS.md` for details).
 
 The 1Password item name is not registered per host — it's simply the **effective `User` resolved via `ssh -G <host>`**. If several hosts log in as the same user, you only need one item in 1Password.
 
@@ -226,6 +226,7 @@ The 1Password item name is not registered per host — it's simply the **effecti
 - The rare exception — same username, different password — can be overridden per host with `SetEnv FFH_CREDENTIAL=<item name>` (see next section)
 - If that item also has a `username` field set, it takes priority over ssh_config's own `User` (passed as `-l`). This only matters for hosts that already override the item via `SetEnv FFH_CREDENTIAL` for a shared login; an explicit `-l`/`-o User=` on the command line always wins over the 1Password value
 - If no matching 1Password item exists for the resolved user, ffh does nothing and falls back to ssh's normal interactive password prompt and ssh_config's own `User` (key-only hosts are unaffected)
+- If `op` isn't signed in (needs `op signin`), ffh shows a message to that effect before falling back — distinct from the "no matching item" case above, which stays silent. You're then asked whether to run `op signin` right away and retry, or just continue with ssh's normal interactive password prompt without signing in. Choosing to authenticate runs `op signin`, and on success the connection proceeds with 1Password's automatic password entry
 - `op_vault` can be overridden with the `FFH_OP_VAULT` environment variable
 
 ---
@@ -338,3 +339,9 @@ Host prod-db
     ProxyJump bastion
     Tag prod
 ```
+
+---
+
+## For developers
+
+Internal architecture details (file layout, the SSH config parser's state machine, the tab feature and 1Password integration's implementation flow, etc.) are documented in [DEVELOPMENT.md](DEVELOPMENT.md) (Japanese only) and [AGENTS.md](AGENTS.md) (English).
